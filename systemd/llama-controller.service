@@ -1,15 +1,26 @@
 [Unit]
 Description=llama.cpp control panel
+Documentation=https://github.com/ggml-org/llama.cpp
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/llama_controller
-ExecStart=%h/llama_controller_venv/bin/python -m llamactl --port 8080 --llama-port 8090
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__APP_DIR__
+Environment=HOME=__HOME__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__PYTHON__ -m llamactl --host __HOST__ --port __PORT__ --llama-port __LLAMA_PORT__
+
+# SIGTERM goes to the controller only, so it can shut its llama-server children
+# down cleanly; anything still alive after the timeout is killed with the group.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
 Restart=on-failure
 RestartSec=3
-KillMode=mixed
-TimeoutStopSec=30
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

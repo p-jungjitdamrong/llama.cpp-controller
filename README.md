@@ -83,6 +83,30 @@ On Debian/Ubuntu, `python3 -m venv` may first need `sudo apt install python3-ven
 
 ## Run
 
+As a service, which is what you want on a box that should come back after a
+reboot:
+
+```bash
+sudo ./scripts/install-service.sh
+```
+
+It fills the unit template in `systemd/` with the current user, paths and venv,
+installs it to `/etc/systemd/system/llama-controller.service`, then enables and
+starts it. The service runs unprivileged as the user who owns the checkout —
+sudo is only needed to write the unit file. `PORT=`, `HOST=`, `LLAMA_PORT=` and
+`PYTHON=` override the defaults. After that it is ordinary systemd:
+
+```bash
+sudo systemctl restart llama-controller
+systemctl status llama-controller
+journalctl -u llama-controller -f
+```
+
+Every llama-server it starts lives in the service's cgroup, so `systemctl stop`
+takes the models down with it and leaves nothing orphaned.
+
+Without systemd, or while developing:
+
 ```bash
 ./scripts/ctl.sh start        # background, logs to controller.log
 ./scripts/ctl.sh logs 50
@@ -96,14 +120,6 @@ Or in the foreground:
 ```
 
 Then open `http://<host>:8080`.
-
-To start it at boot, install the user service:
-
-```bash
-mkdir -p ~/.config/systemd/user && cp systemd/llama-controller.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now llama-controller
-sudo loginctl enable-linger "$USER"   # so it survives logout
-```
 
 ## Configuration
 

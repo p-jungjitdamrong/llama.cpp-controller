@@ -18,6 +18,11 @@ running() {
 case "${1:-status}" in
   start)
     if running; then echo "already running (pid $(cat "$PID_FILE"))"; exit 0; fi
+    # installed as a service? then that owns the port — don't start a second one
+    if command -v systemctl >/dev/null && systemctl is-active --quiet llama-controller 2>/dev/null; then
+      echo "llama-controller.service is already running — use 'sudo systemctl restart llama-controller'"
+      exit 1
+    fi
     cd "$APP_DIR"
     setsid "$PYTHON" -m llamactl --port "$PORT" --llama-port "$LLAMA_PORT" \
       </dev/null >"$LOG_FILE" 2>&1 &
