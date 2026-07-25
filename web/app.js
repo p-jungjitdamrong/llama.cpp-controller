@@ -10,6 +10,8 @@ const state = {
   info: null,
   logs: [],
   mode: "single",       // single | router
+  expandedRouters: new Set(),
+  serverSignature: null,
   series: { cpu: [], mem: [], proc: [] },
   gpuCount: 0,
   maxPoints: 120,
@@ -203,7 +205,7 @@ function renderMetrics(sample) {
 
 /* --------------------------------------------------------------- servers */
 
-function serverCard(server) {
+function serverMeta(server) {
   const meta = [];
   if (server.pid) meta.push(`pid ${server.pid}`);
   if (server.load_seconds) meta.push(`loaded in ${server.load_seconds}s`);
@@ -212,7 +214,10 @@ function serverCard(server) {
   const gen = server.stats && server.stats.generation;
   if (gen && gen.tokens_per_second) meta.push(`${gen.tokens_per_second.toFixed(1)} tok/s`);
   if (server.model_meta && server.model_meta.n_ctx) meta.push(`ctx ${server.model_meta.n_ctx.toLocaleString()}`);
+  return meta.join(" · ");
+}
 
+function serverCard(server) {
   const host = ["0.0.0.0", "::", ""].includes(server.bind_host) ? location.hostname : server.bind_host;
   const url = `http://${host}:${server.bind_port}`;
   const stopped = !server.pid;
@@ -228,7 +233,7 @@ function serverCard(server) {
                   data-id="${server.id}">${stopped ? "Remove" : "Stop"}</button>
         </span>
       </div>
-      <div class="server-meta dim tiny">${meta.join(" · ") || "&nbsp;"}</div>
+      <div class="server-meta dim tiny">${serverMeta(server) || "&nbsp;"}</div>
       ${server.last_error ? `<div class="server-error tiny">${escapeHtml(server.last_error)}</div>` : ""}
       ${server.is_router ? routerModels(server) : ""}
     </div>`;
@@ -238,6 +243,8 @@ function routerModels(server) {
   if (!server.router_models.length) {
     return '<div class="router-models dim tiny">router has no models yet</div>';
   }
+  const open = state.expandedRouters.has(server.id);
+  const loadedModels = server.router_models.filter((m) => m.status === "loaded");
   const rows = server.router_models.map((m) => {
     const loaded = m.status === "loaded";
     return `<div class="router-row">
@@ -248,11 +255,17 @@ function routerModels(server) {
                 data-id="${server.id}" data-model="${escapeHtml(m.id)}">${loaded ? "Unload" : "Load"}</button>
       </div>`;
   }).join("");
-  const loaded = server.router_models.filter((m) => m.status === "loaded").length;
+  // collapsed by default: the summary already says what is resident
+  const resident = loadedModels.length
+    ? loadedModels.map((m) => escapeHtml(m.id.split("/").pop())).join(", ")
+    : "none loaded";
   return `<div class="router-models">
-      <div class="dim tiny">${server.router_models.length} models · ${loaded} loaded
-        (max ${server.params.models_max})</div>
-      ${rows}
+      <div class="router-summary" data-toggle="${server.id}">
+        <span class="chevron ${open ? "open" : ""}">▸</span>
+        <span class="dim tiny">${server.router_models.length} models · ${loadedModels.length}/${server.params.models_max} loaded</span>
+        <span class="dim tiny resident">${resident}</span>
+      </div>
+      <div class="router-rows ${open ? "" : "hidden"}">${rows}</div>
     </div>`;
 }
 
@@ -269,10 +282,37 @@ function renderServers(servers) {
     : "";
   $("#btn-stop-all").disabled = !live.length;
 
+  // Rebuild only when something structural changed; otherwise just refresh the
+  // volatile numbers, so the list does not flicker or lose scroll every second.
+  const signature = JSON.stringify(servers.map((s) => [
+    s.id, s.state, s.pid, s.bind_port, s.model_name, s.last_error,
+    state.expandedRouters.has(s.id),
+    s.router_models.map((m) => m.id + m.status),
+  ]));
   const list = $("#server-list");
+  if (signature === state.serverSignature) {
+    for (const server of servers) {
+      const meta = list.querySelector(`.server[data-id="${server.id}"] .server-meta`);
+      if (meta) meta.textContent = serverMeta(server);
+    }
+    syncInstanceSelects(servers);
+    return;
+  }
+  state.serverSignature = signature;
+
   list.innerHTML = servers.length
     ? servers.map(serverCard).join("")
     : '<p class="empty">no servers started yet</p>';
+
+  list.querySelectorAll(".router-summary").forEach((row) => {
+    row.onclick = () => {
+      const id = +row.dataset.toggle;
+      if (state.expandedRouters.has(id)) state.expandedRouters.delete(id);
+      else state.expandedRouters.add(id);
+      state.serverSignature = null;
+      renderServers(state.servers);
+    };
+  });
 
   list.querySelectorAll("button[data-action]").forEach((button) => {
     button.onclick = async () => {

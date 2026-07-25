@@ -158,17 +158,28 @@ select.input { cursor: pointer; }
 .mode-help { margin: 0 0 10px; }
 .hidden { display: none !important; }
 
+#server-list { max-height: 42vh; overflow-y: auto; }
 .server {
   background: var(--bg-soft); border: 1px solid var(--border);
-  border-radius: 8px; padding: 9px 11px; margin-bottom: 8px;
+  border-radius: 8px; padding: 7px 10px; margin-bottom: 6px;
 }
+.server:last-child { margin-bottom: 0; }
 .server-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .server-name { font-weight: 500; word-break: break-all; }
 .server-actions { margin-left: auto; display: flex; gap: 6px; }
 .server-meta { margin-top: 4px; }
 .server-error { color: var(--danger); margin-top: 4px; word-break: break-word; }
 
-.router-models { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+.router-models { margin-top: 7px; border-top: 1px solid var(--border); padding-top: 7px; }
+.router-summary { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.router-summary:hover .chevron { color: var(--text); }
+.chevron { color: var(--dim); font-size: 10px; transition: transform .15s; }
+.chevron.open { transform: rotate(90deg); }
+.router-summary .resident {
+  margin-left: auto; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 55%; color: var(--accent-2);
+}
+.router-rows { margin-top: 5px; max-height: 190px; overflow-y: auto; }
 .router-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
 .router-id { word-break: break-all; }
 .router-row .btn { margin-left: auto; }
