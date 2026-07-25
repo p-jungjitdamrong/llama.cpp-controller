@@ -29,12 +29,16 @@
   <aside class="sidebar">
     <div class="panel">
       <div class="panel-head">
-        <h2>Models</h2>
-        <button id="btn-rescan" class="btn small ghost" title="Rescan model directories">⟳</button>
+        <h2>Models <span class="count" id="model-count"></span></h2>
+        <div class="head-buttons">
+          <button id="btn-toggle-filter" class="btn small ghost" title="Filter models">⌕</button>
+          <button id="btn-toggle-dirs" class="btn small ghost" title="Where these came from">ⓘ</button>
+          <button id="btn-rescan" class="btn small ghost" title="Rescan model directories">⟳</button>
+        </div>
       </div>
-      <input id="model-filter" class="input" type="search" placeholder="Filter models…">
+      <input id="model-filter" class="input hidden" type="search" placeholder="Filter models…">
+      <div id="model-dirs" class="drawer hidden"></div>
       <div id="model-list" class="model-list"><p class="empty">scanning…</p></div>
-      <p class="dim tiny" id="model-dirs"></p>
     </div>
 
     <div class="panel">

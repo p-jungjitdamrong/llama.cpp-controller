@@ -397,18 +397,27 @@ async function loadModels() {
   try {
     const data = await api("/api/models");
     state.models = data.models;
-    const skipped = data.skipped || [];
-    let note = `${data.models.length} model${data.models.length === 1 ? "" : "s"} in ${data.dirs.join(", ")}`;
-    if (skipped.length) {
-      const reasons = [...new Set(skipped.map((s) => s.reason))].join(", ");
-      note += ` · ${skipped.length} skipped (${reasons})`;
-    }
-    $("#model-dirs").textContent = note;
-    $("#model-dirs").title = skipped.map((s) => `${s.name} — ${s.reason}`).join("\n");
+    $("#model-count").textContent = data.models.length || "";
+    renderScanDetails(data);
     renderModels();
   } catch (err) {
     $("#model-list").innerHTML = `<p class="empty">scan failed: ${escapeHtml(err.message)}</p>`;
   }
+}
+
+/* Folder list and skipped files, kept behind the ⓘ button so the card stays short. */
+function renderScanDetails(data) {
+  const byReason = new Map();
+  for (const item of data.skipped || []) {
+    byReason.set(item.reason, (byReason.get(item.reason) || 0) + 1);
+  }
+  const skipped = [...byReason].map(([reason, n]) => `<div>${n} × ${escapeHtml(reason)}</div>`);
+  $("#model-dirs").innerHTML = `
+    <div class="drawer-title">scanned</div>
+    ${data.dirs.map((d) => `<div>${escapeHtml(d)}</div>`).join("")}
+    ${skipped.length ? `<div class="drawer-title">skipped</div>${skipped.join("")}` : ""}`;
+  $("#model-dirs").title = (data.skipped || [])
+    .map((s) => `${s.name} — ${s.reason}`).join("\n");
 }
 
 /* ---------------------------------------------------------------- params */
@@ -809,6 +818,16 @@ $("#btn-stop-all").onclick = async () => {
 };
 
 $("#btn-rescan").onclick = loadModels;
+$("#btn-toggle-dirs").onclick = () => {
+  $("#model-dirs").classList.toggle("hidden");
+  $("#btn-toggle-dirs").classList.toggle("on", !$("#model-dirs").classList.contains("hidden"));
+};
+$("#btn-toggle-filter").onclick = () => {
+  const input = $("#model-filter");
+  const showing = input.classList.toggle("hidden");
+  $("#btn-toggle-filter").classList.toggle("on", !showing);
+  if (showing) { input.value = ""; renderModels(); } else { input.focus(); }
+};
 $("#model-filter").oninput = renderModels;
 $("#log-filter").oninput = renderLogs;
 $("#log-instance").onchange = renderLogs;

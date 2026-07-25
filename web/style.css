@@ -86,7 +86,25 @@ select.input { cursor: pointer; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; }
 
 /* ------------------------------------------------------------ model list */
-.model-list { margin-top: 8px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.head-buttons { display: flex; gap: 2px; }
+.head-buttons .btn { padding: 2px 7px; line-height: 1.4; }
+.head-buttons .btn.on { color: var(--accent); border-color: #1f6feb66; background: #1f6feb22; }
+.count {
+  font-size: 11px; color: var(--dim); background: var(--bg-soft);
+  border-radius: 999px; padding: 1px 7px; margin-left: 4px;
+}
+.drawer {
+  font-size: 11px; color: var(--dim); line-height: 1.6;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 9px; margin-top: 8px; word-break: break-all;
+}
+.drawer-title {
+  color: var(--text); text-transform: uppercase; letter-spacing: .05em;
+  font-size: 10px; margin-top: 4px;
+}
+.drawer-title:first-child { margin-top: 0; }
+.model-list { margin-top: 8px; max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.model-list:first-child { margin-top: 0; }
 .model {
   padding: 7px 9px; border-radius: 6px; cursor: pointer;
   border: 1px solid transparent; background: var(--bg-soft);
