@@ -399,6 +399,14 @@ class SupervisorPool:
         self._next_id = 1
         self._subscribers: set[asyncio.Queue] = set()
         self._lock = asyncio.Lock()
+        # controller-level lines that belong to no single instance
+        self.system_logs: deque[dict[str, Any]] = deque(maxlen=200)
+
+    def log(self, line: str) -> None:
+        record = {"ts": time.time(), "stream": "controller", "line": line,
+                  "instance": None, "model": "controller"}
+        self.system_logs.append(record)
+        self._publish(record)
 
     # ------------------------------------------------------------ log fanout
 
@@ -421,7 +429,7 @@ class SupervisorPool:
         if instance_id is not None:
             instance = self.instances.get(instance_id)
             return list(instance.logs)[-limit:] if instance else []
-        merged: list[dict[str, Any]] = []
+        merged: list[dict[str, Any]] = list(self.system_logs)
         for instance in self.instances.values():
             merged.extend(instance.logs)
         merged.sort(key=lambda r: r["ts"])
@@ -554,6 +562,30 @@ class SupervisorPool:
         instance = self.instances.pop(instance_id, None)
         if instance is not None:
             await instance.close()
+
+    async def autostart(self, entries: list[dict[str, Any]], timeout: float = 300.0) -> None:
+        """Bring up saved servers one at a time, waiting for each to settle.
+
+        Sequential on purpose: loading two large models at once thrashes disk and
+        can put the box into swap before either is usable.
+        """
+        if not entries:
+            return
+        self.log(f"autostart: bringing up {len(entries)} saved server(s)")
+        for entry in entries:
+            params = LaunchParams.from_dict(entry.get("params") or {})
+            label = Path(entry.get("model_path") or params.models_dir or "?").name
+            try:
+                status = await self.start(entry.get("model_path", ""), params)
+            except Exception as exc:
+                self.log(f"autostart: {label} failed — {exc}")
+                continue
+            instance = self.instances[status["id"]]
+            deadline = time.monotonic() + timeout
+            while instance.state is ServerState.STARTING and time.monotonic() < deadline:
+                await asyncio.sleep(1.0)
+            self.log(f"autostart: {instance.name} is {instance.state.value}"
+                     f" on port {instance.params.port}")
 
     async def shutdown(self) -> None:
         await asyncio.gather(*(i.close() for i in self.instances.values()),

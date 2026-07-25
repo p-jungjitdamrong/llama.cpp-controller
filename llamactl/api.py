@@ -64,12 +64,15 @@ def create_app(cfg: Config) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
         task = asyncio.create_task(sampler())
+        # in the background, so the dashboard is reachable while models load
+        boot = asyncio.create_task(pool.autostart(cfg.autostart))
         try:
             yield
         finally:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            for pending in (task, boot):
+                pending.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await pending
             await pool.shutdown()
 
     app = FastAPI(title="llama-controller", docs_url="/api/docs", lifespan=lifespan)
@@ -209,6 +212,26 @@ def create_app(cfg: Config) -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"cleared": cleared, "port": port}
+
+    # ------------------------------------------------------------- autostart
+
+    @app.get("/api/autostart")
+    async def get_autostart() -> dict[str, Any]:
+        return {"entries": cfg.autostart}
+
+    @app.post("/api/autostart")
+    async def set_autostart(payload: dict = Body(default={})) -> dict[str, Any]:
+        """Save the servers to bring up on boot — by default whatever runs now."""
+        if "entries" in payload:
+            cfg.autostart = payload["entries"] or []
+        else:
+            cfg.autostart = [
+                {"model_path": instance.model_path, "params": asdict(instance.params)}
+                for instance in sorted(pool.instances.values(), key=lambda i: i.id)
+                if instance.pid
+            ]
+        cfg.save()
+        return {"entries": cfg.autostart}
 
     # ---------------------------------------------------------------- router
 

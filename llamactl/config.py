@@ -62,6 +62,9 @@ class Config:
     defaults: LaunchParams = field(default_factory=LaunchParams)
     # model path -> saved launch params
     presets: dict[str, dict] = field(default_factory=dict)
+    # servers to bring up when the controller starts, in order:
+    # [{"model_path": "...", "params": {...}}, …]
+    autostart: list[dict] = field(default_factory=list)
     # last model started, restored into the UI on reload
     last_model: str = ""
 

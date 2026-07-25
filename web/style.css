@@ -84,6 +84,7 @@ select.input { cursor: pointer; }
 
 .panel { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; }
+.panel-head .head-buttons { margin-left: auto; }
 
 /* ------------------------------------------------------------ model list */
 .head-buttons { display: flex; gap: 2px; }

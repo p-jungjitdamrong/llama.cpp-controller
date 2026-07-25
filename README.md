@@ -36,6 +36,11 @@ browser ──HTTP/WS──> llamactl ─ llama-server :8091  (another model)
   the UI and saved per model, so the next start of that model reuses them. The
   bind address defaults to `0.0.0.0` so the model API is reachable from other
   machines, and each server shows the exact URL to point a client at.
+- **Startup set** — *Save as startup* records exactly which servers are running
+  right now, and the controller brings them back in the same order the next time
+  it starts, waiting for each to load before starting the next. Combined with the
+  systemd unit that means the box comes back from a reboot serving models with
+  nobody logged in.
 - **Download from Hugging Face** — search the Hub (or paste an `org/repo`), see
   every GGUF file with its size, and download with a live progress bar. Partial
   transfers resume with a Range request; finished downloads appear in the model
@@ -133,6 +138,7 @@ you start a model. Edit it directly or use `POST /api/config`.
 | `controller_host` / `controller_port` | where the dashboard binds |
 | `defaults` | launch flags for a model with no saved preset, including `host` and `port` for llama-server |
 | `presets` | per-model launch flags, saved automatically on start |
+| `autostart` | servers to bring up on startup, in order — written by *Save as startup* |
 
 The same defaults can be set on the command line: `--host` / `--port` for the
 dashboard, `--llama-host` / `--llama-port` for the model server it spawns.
@@ -148,6 +154,7 @@ dashboard, `--llama-host` / `--llama-port` for the model server it spawns.
 | POST | `/api/server/stop` · `restart` · `remove` | `{id}` |
 | POST | `/api/server/clear-port` | kill a llama-server orphaned by an earlier controller run |
 | POST | `/api/router/load` · `unload` · `refresh` | `{id, model}` — drive a router instance |
+| GET · POST | `/api/autostart` | read the startup set; POST `{}` saves what is running, `{entries: []}` clears |
 | GET | `/api/hub/search?q=` · `/api/hub/files?repo=` | browse the Hugging Face Hub |
 | POST | `/api/hub/download` · `/api/hub/cancel` | `{repo, path}` / `{id}` |
 | GET | `/api/hub/downloads` | progress of every transfer |

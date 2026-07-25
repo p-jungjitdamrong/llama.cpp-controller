@@ -349,9 +349,24 @@ function renderServers(servers) {
     const running = servers.find((s) => s.model_path === el.dataset.path && s.pid);
     el.classList.toggle("running", Boolean(running));
   });
-  $("#servers-hint").textContent = servers.length
-    ? "each server is a separate llama-server process"
-    : "";
+}
+
+function renderAutostart(entries) {
+  state.autostart = entries;
+  const hint = $("#servers-hint");
+  if (!entries.length) {
+    hint.textContent = "nothing starts automatically";
+    hint.title = "";
+    return;
+  }
+  const names = entries.map((e) => {
+    const params = e.params || {};
+    return params.mode === "router"
+      ? `router:${params.models_dir.split("/").pop()}`
+      : e.model_path.split("/").pop();
+  });
+  hint.textContent = `on startup: ${names.length} server${names.length === 1 ? "" : "s"}`;
+  hint.title = names.join("\n");
 }
 
 function syncInstanceSelects(servers) {
@@ -817,6 +832,8 @@ async function init() {
     ? external.map((p) => `<span class="k">pid ${p.pid}</span><span class="v">${escapeHtml(p.cmdline)}</span>`).join("")
     : '<span class="k">none</span><span class="v">—</span>';
 
+  renderAutostart((await api("/api/autostart")).entries);
+
   const downloads = await api("/api/hub/downloads");
   $("#hub-dest").textContent = `downloads are saved to ${downloads.dest}`;
   renderDownloads(downloads.downloads);
@@ -855,6 +872,30 @@ $("#btn-stop-all").onclick = async () => {
     await api("/api/server/stop", { method: "POST", body: JSON.stringify({ id: server.id }) })
       .catch((err) => alert(err.message));
   }
+};
+
+$("#btn-save-autostart").onclick = async () => {
+  const button = $("#btn-save-autostart");
+  const running = state.servers.filter((s) => s.pid).length;
+  if (!running && !confirm("No servers are running — save an empty startup set?")) return;
+  button.disabled = true;
+  try {
+    const data = await api("/api/autostart", { method: "POST", body: "{}" });
+    renderAutostart(data.entries);
+    button.textContent = "Saved ✓";
+    setTimeout(() => { button.textContent = "Save as startup"; }, 2000);
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    button.disabled = false;
+  }
+};
+
+$("#btn-clear-autostart").onclick = async () => {
+  const data = await api("/api/autostart", {
+    method: "POST", body: JSON.stringify({ entries: [] }),
+  }).catch((err) => { alert(err.message); return null; });
+  if (data) renderAutostart(data.entries);
 };
 
 $("#btn-rescan").onclick = loadModels;
