@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+config.json
+controller.log
+controller.pid
+.venv/
+.DS_Store

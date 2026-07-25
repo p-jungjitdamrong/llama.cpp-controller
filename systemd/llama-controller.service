@@ -1,0 +1,15 @@
+[Unit]
+Description=llama.cpp control panel
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/llama_controller
+ExecStart=%h/llama_controller_venv/bin/python -m llamactl --port 8080 --llama-port 8090
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

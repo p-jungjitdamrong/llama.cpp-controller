@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama-controller</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🦙</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">🦙 <span>llama-controller</span></div>
+  <div class="host-info">
+    <span id="hostname">—</span>
+    <span class="dim" id="cpu-model">—</span>
+  </div>
+  <div class="server-status">
+    <span class="pill" id="state-pill" data-state="stopped">stopped</span>
+    <span id="running-model" class="dim">no model loaded</span>
+    <span id="uptime" class="dim"></span>
+    <a id="endpoint-link" class="endpoint" href="#" target="_blank" rel="noopener" hidden></a>
+  </div>
+  <div class="actions">
+    <button id="btn-restart" class="btn" disabled>Restart</button>
+    <button id="btn-stop" class="btn danger" disabled>Stop</button>
+    <span id="ws-dot" class="dot" title="websocket"></span>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="sidebar">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Models</h2>
+        <button id="btn-rescan" class="btn small ghost" title="Rescan model directories">⟳</button>
+      </div>
+      <input id="model-filter" class="input" type="search" placeholder="Filter models…">
+      <div id="model-list" class="model-list"><p class="empty">scanning…</p></div>
+      <p class="dim tiny" id="model-dirs"></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Launch parameters</h2></div>
+      <div class="params">
+        <label>Bind host <span class="hint">--host</span>
+          <input id="p-host" class="input" type="text" value="0.0.0.0"
+                 placeholder="0.0.0.0" list="host-presets">
+          <datalist id="host-presets">
+            <option value="0.0.0.0">reachable from other machines</option>
+            <option value="127.0.0.1">local only</option>
+          </datalist></label>
+        <label>Port <span class="hint">--port</span>
+          <input id="p-port" class="input" type="number" min="1" max="65535" value="8090"></label>
+        <label>GPU layers <span class="hint">-ngl</span>
+          <input id="p-ngl" class="input" type="number" min="0" max="999" value="99"></label>
+        <label>Context <span class="hint">-c</span>
+          <input id="p-ctx" class="input" type="number" min="256" step="256" value="4096"></label>
+        <label>Threads <span class="hint">-t, 0=auto</span>
+          <input id="p-threads" class="input" type="number" min="0" max="128" value="0"></label>
+        <label>Parallel slots <span class="hint">-np</span>
+          <input id="p-parallel" class="input" type="number" min="1" max="16" value="1"></label>
+        <label>Batch <span class="hint">-b, 0=default</span>
+          <input id="p-batch" class="input" type="number" min="0" step="64" value="0"></label>
+        <label>Flash attention <span class="hint">-fa</span>
+          <select id="p-fa" class="input">
+            <option value="auto">auto</option><option value="on">on</option><option value="off">off</option>
+          </select></label>
+        <label class="check"><input id="p-mlock" type="checkbox"> mlock</label>
+        <label class="check"><input id="p-nommap" type="checkbox"> no-mmap</label>
+        <label class="check"><input id="p-jinja" type="checkbox" checked> jinja</label>
+        <label class="full">Extra args
+          <input id="p-extra" class="input" type="text" placeholder="--rope-scaling linear …"></label>
+      </div>
+      <button id="btn-start" class="btn primary wide" disabled>Select a model to start</button>
+      <pre id="cmd-preview" class="cmd"></pre>
+    </div>
+  </aside>
+
+  <section class="content">
+    <div class="cards">
+      <div class="card" id="card-cpu">
+        <div class="card-head"><h3>CPU</h3><span class="value" id="cpu-value">—</span></div>
+        <canvas class="spark" data-series="cpu"></canvas>
+        <div class="cores" id="cpu-cores"></div>
+        <div class="card-foot"><span id="cpu-extra" class="dim tiny">—</span></div>
+      </div>
+
+      <div class="card" id="card-mem">
+        <div class="card-head"><h3>Memory</h3><span class="value" id="mem-value">—</span></div>
+        <canvas class="spark" data-series="mem"></canvas>
+        <div class="bar"><div class="bar-fill" id="mem-bar"></div></div>
+        <div class="card-foot"><span id="mem-extra" class="dim tiny">—</span></div>
+      </div>
+
+      <div id="gpu-cards" class="passthrough"></div>
+
+      <div class="card" id="card-proc">
+        <div class="card-head"><h3>llama-server</h3><span class="value" id="proc-value">—</span></div>
+        <canvas class="spark" data-series="proc"></canvas>
+        <div class="card-foot"><span id="proc-extra" class="dim tiny">not running</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="logs">Logs</button>
+      <button class="tab" data-tab="chat">Test chat</button>
+      <button class="tab" data-tab="details">Details</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-logs">
+      <div class="panel-head log-head">
+        <input id="log-filter" class="input" type="search" placeholder="Filter log lines…">
+        <label class="check"><input id="log-autoscroll" type="checkbox" checked> autoscroll</label>
+        <button id="btn-clear-log" class="btn small ghost">Clear view</button>
+      </div>
+      <pre id="log-view" class="log"></pre>
+    </div>
+
+    <div class="tab-panel" id="tab-chat">
+      <div id="chat-log" class="chat-log"><p class="empty">Start a model, then send a prompt to check it responds.</p></div>
+      <form id="chat-form" class="chat-form">
+        <textarea id="chat-input" class="input" rows="2" placeholder="Ask something…"></textarea>
+        <button class="btn primary" id="chat-send" type="submit" disabled>Send</button>
+      </form>
+      <div class="dim tiny" id="chat-stats"></div>
+    </div>
+
+    <div class="tab-panel" id="tab-details">
+      <div class="detail-grid">
+        <div><h4>Command line</h4><pre id="d-argv" class="cmd">—</pre></div>
+        <div><h4>Throughput</h4><div id="d-stats" class="kv">—</div></div>
+        <div><h4>System</h4><div id="d-system" class="kv">—</div></div>
+        <div><h4>Other llama-server processes</h4><div id="d-external" class="kv">—</div></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
