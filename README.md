@@ -1,16 +1,19 @@
 # llama-controller
 
 A small web control panel that wraps `llama-server` from llama.cpp: pick a GGUF,
-start it with the flags you want, watch CPU / RAM / GPU and the server log live,
-and switch models without touching the terminal.
+start it with the flags you want, run several models at once, download new ones
+from Hugging Face, and watch CPU / RAM / GPU and the server logs live — without
+touching the terminal.
 
 Runs on the machine that hosts llama.cpp. Four dependencies, no build step, no
 database — the dashboard is plain HTML/CSS/JS served by the same process.
 
 ```
-browser ──HTTP/WebSocket──> llamactl (FastAPI, :8080) ──spawns──> llama-server (:8090)
-                                   │
-                                   └── /proc + /sys/class/drm (CPU, RAM, GPU)
+                          ┌─ llama-server :8090  (one model)
+browser ──HTTP/WS──> llamactl ─ llama-server :8091  (another model)
+                     :8080    └─ llama-server :8100 --models-dir  (router)
+                        │
+                        └── /proc + /sys/class/drm (CPU, RAM, GPU)
 ```
 
 ## What it does
@@ -18,20 +21,34 @@ browser ──HTTP/WebSocket──> llamactl (FastAPI, :8080) ──spawns──
 - **Model list** — scans configured directories for `.gguf` and reads each file's
   GGUF header for architecture, quantisation, training context and layer count.
   Vocab-only test files are filtered out; multi-part shards show once.
-- **Start / stop / restart** — one model at a time. Launch flags (`--host`,
-  `--port`, `-ngl`, `-c`, `-t`, `-np`, `-b`, `-fa`, `--mlock`, `--no-mmap`,
-  `--jinja`, plus free-form extra args) are editable in the UI and saved per
-  model, so the next start of that model reuses them. The bind address defaults
-  to `0.0.0.0` so the model API is reachable from other machines, and the header
-  shows the exact URL to point a client at.
+- **Run several models at once** — each model gets its own llama-server process
+  on its own port. Ask for a port that is taken and the next free one is used,
+  so starting a second model is one click. Every server is listed with its
+  state, endpoint URL, CPU, memory and tokens/second, and can be stopped or
+  restarted on its own.
+- **Router mode** — the alternative: one llama-server started with
+  `--models-dir` hosts a whole directory (plus anything in the Hugging Face
+  cache) on a single port and loads models on demand, up to `--models-max` at a
+  time. The dashboard lists what the router knows about, shows which models are
+  resident, and can load or unload them explicitly.
+- **Launch flags** (`--host`, `--port`, `-ngl`, `-c`, `-t`, `-np`, `-b`, `-fa`,
+  `--mlock`, `--no-mmap`, `--jinja`, plus free-form extra args) are editable in
+  the UI and saved per model, so the next start of that model reuses them. The
+  bind address defaults to `0.0.0.0` so the model API is reachable from other
+  machines, and each server shows the exact URL to point a client at.
+- **Download from Hugging Face** — search the Hub (or paste an `org/repo`), see
+  every GGUF file with its size, and download with a live progress bar. Partial
+  transfers resume with a Range request; finished downloads appear in the model
+  list automatically. No token and no `huggingface_hub` dependency.
 - **Monitoring at 1 Hz** — total and per-core CPU, memory and swap, every
   detected GPU (busy percentage, memory, temperature, power, clock), and the
   llama-server process's own CPU, RSS and thread count.
-- **Live log** — llama-server's stdout/stderr streamed over a websocket, with a
-  filter box and level colouring. Prompt and generation tokens/second are parsed
-  out of the timing lines and shown under *Details*.
-- **Test chat** — a minimal streaming chat box that proxies to the running
-  server's OpenAI-compatible endpoint, to confirm a model actually answers.
+- **Live log** — every server's stdout/stderr streamed over one websocket, tagged
+  with the model it came from, filterable by server and by text. Prompt and
+  generation tokens/second are parsed out of the timing lines.
+- **Test chat** — a minimal streaming chat box that proxies to a chosen server's
+  OpenAI-compatible endpoint (and, for a router, a chosen model) to confirm it
+  actually answers.
 - **Leaves other servers alone** — llama-server processes it did not start are
   listed read-only under *Details* and are never signalled. The one exception is
   a llama-server left on its own port by a previous run of the controller (same
@@ -109,25 +126,33 @@ dashboard, `--llama-host` / `--llama-port` for the model server it spawns.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/info` | host details, config, foreign llama-server processes |
-| GET | `/api/models` | discovered GGUF files with metadata |
-| GET | `/api/status` | supervisor state, argv, throughput stats |
-| POST | `/api/server/start` | `{model_path, params}` |
-| POST | `/api/server/stop` · `/api/server/restart` | lifecycle |
+| GET | `/api/models` | discovered GGUF files with metadata, plus what was skipped |
+| GET | `/api/status` | every instance: state, argv, endpoint, throughput |
+| POST | `/api/server/start` | `{model_path, params}`; `params.mode: "router"` starts a router |
+| POST | `/api/server/stop` · `restart` · `remove` | `{id}` |
 | POST | `/api/server/clear-port` | kill a llama-server orphaned by an earlier controller run |
-| GET | `/api/logs?limit=` | recent log lines |
+| POST | `/api/router/load` · `unload` · `refresh` | `{id, model}` — drive a router instance |
+| GET | `/api/hub/search?q=` · `/api/hub/files?repo=` | browse the Hugging Face Hub |
+| POST | `/api/hub/download` · `/api/hub/cancel` | `{repo, path}` / `{id}` |
+| GET | `/api/hub/downloads` | progress of every transfer |
+| GET | `/api/logs?limit=&instance=` | recent log lines, optionally for one server |
 | GET | `/api/metrics/history` | recent metric samples |
-| WS | `/ws` | 1 Hz metrics + status, and log lines as they arrive |
-| POST | `/api/chat` | streaming passthrough to `/v1/chat/completions` |
-| ANY | `/proxy/{path}` | passthrough to llama-server (`/slots`, `/metrics`, …) |
+| WS | `/ws` | 1 Hz metrics, server states and downloads; log lines as they arrive |
+| POST | `/api/chat` | streaming passthrough; `{instance, model?, messages}` |
+| ANY | `/proxy/{id}/{path}` | passthrough to one server (`/slots`, `/metrics`, …) |
 
 Interactive docs at `/api/docs`.
 
 ## Notes and limits
 
-- **One model at a time.** Switching stops the current server and starts a new
-  one. On a 13 GB laptop that is the honest constraint; recent llama.cpp also has
-  a built-in router mode (`--models-dir`, `--models-max`) if you have the RAM to
-  keep several loaded — this controller does not use it.
+- **Nothing stops you running out of memory.** Each extra model is a real
+  process holding real weights; the controller shows free memory but will not
+  refuse a start. Router mode is the gentler option — it caps how many models
+  are resident with `--models-max` and loads the rest on demand.
+- **Two ways to serve several models, pick per situation.** Separate instances
+  give each model its own flags, port and log, and they stay warm. A router
+  gives one endpoint and one port for many models, at the cost of a load pause
+  when a request hits a model that is not resident.
 - **On an AMD APU**, weights may land in GTT (shared system RAM) rather than the
   small VRAM carve-out, depending on the backend. The card shows whichever of
   the two is actually carrying the model and labels it.

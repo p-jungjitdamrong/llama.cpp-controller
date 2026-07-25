@@ -16,14 +16,11 @@
     <span class="dim" id="cpu-model">—</span>
   </div>
   <div class="server-status">
-    <span class="pill" id="state-pill" data-state="stopped">stopped</span>
-    <span id="running-model" class="dim">no model loaded</span>
-    <span id="uptime" class="dim"></span>
-    <a id="endpoint-link" class="endpoint" href="#" target="_blank" rel="noopener" hidden></a>
+    <span class="pill" id="summary-pill" data-state="stopped">no servers</span>
+    <span id="summary-detail" class="dim"></span>
   </div>
   <div class="actions">
-    <button id="btn-restart" class="btn" disabled>Restart</button>
-    <button id="btn-stop" class="btn danger" disabled>Stop</button>
+    <button id="btn-stop-all" class="btn danger" disabled>Stop all</button>
     <span id="ws-dot" class="dot" title="websocket"></span>
   </div>
 </header>
@@ -41,7 +38,18 @@
     </div>
 
     <div class="panel">
-      <div class="panel-head"><h2>Launch parameters</h2></div>
+      <div class="panel-head">
+        <h2>Launch</h2>
+        <div class="modes">
+          <button class="mode active" data-mode="single">One model</button>
+          <button class="mode" data-mode="router">Router</button>
+        </div>
+      </div>
+
+      <p class="dim tiny mode-help" id="mode-help">
+        Starts one llama-server per model — run as many as memory allows.
+      </p>
+
       <div class="params">
         <label>Bind host <span class="hint">--host</span>
           <input id="p-host" class="input" type="text" value="0.0.0.0"
@@ -52,23 +60,31 @@
           </datalist></label>
         <label>Port <span class="hint">--port</span>
           <input id="p-port" class="input" type="number" min="1" max="65535" value="8090"></label>
-        <label>GPU layers <span class="hint">-ngl</span>
+
+        <label class="router-only">Models dir <span class="hint">--models-dir</span>
+          <input id="p-models-dir" class="input" type="text" placeholder="~/models"></label>
+        <label class="router-only">Max loaded <span class="hint">--models-max</span>
+          <input id="p-models-max" class="input" type="number" min="1" max="16" value="2"></label>
+        <label class="check router-only full"><input id="p-autoload" type="checkbox" checked>
+          load on first request <span class="hint">--models-autoload</span></label>
+
+        <label class="single-only">GPU layers <span class="hint">-ngl</span>
           <input id="p-ngl" class="input" type="number" min="0" max="999" value="99"></label>
-        <label>Context <span class="hint">-c</span>
+        <label class="single-only">Context <span class="hint">-c</span>
           <input id="p-ctx" class="input" type="number" min="256" step="256" value="4096"></label>
-        <label>Threads <span class="hint">-t, 0=auto</span>
+        <label class="single-only">Threads <span class="hint">-t, 0=auto</span>
           <input id="p-threads" class="input" type="number" min="0" max="128" value="0"></label>
-        <label>Parallel slots <span class="hint">-np</span>
+        <label class="single-only">Parallel slots <span class="hint">-np</span>
           <input id="p-parallel" class="input" type="number" min="1" max="16" value="1"></label>
-        <label>Batch <span class="hint">-b, 0=default</span>
+        <label class="single-only">Batch <span class="hint">-b, 0=default</span>
           <input id="p-batch" class="input" type="number" min="0" step="64" value="0"></label>
-        <label>Flash attention <span class="hint">-fa</span>
+        <label class="single-only">Flash attention <span class="hint">-fa</span>
           <select id="p-fa" class="input">
             <option value="auto">auto</option><option value="on">on</option><option value="off">off</option>
           </select></label>
-        <label class="check"><input id="p-mlock" type="checkbox"> mlock</label>
-        <label class="check"><input id="p-nommap" type="checkbox"> no-mmap</label>
-        <label class="check"><input id="p-jinja" type="checkbox" checked> jinja</label>
+        <label class="check single-only"><input id="p-mlock" type="checkbox"> mlock</label>
+        <label class="check single-only"><input id="p-nommap" type="checkbox"> no-mmap</label>
+        <label class="check single-only"><input id="p-jinja" type="checkbox" checked> jinja</label>
         <label class="full">Extra args
           <input id="p-extra" class="input" type="text" placeholder="--rope-scaling linear …"></label>
       </div>
@@ -98,18 +114,27 @@
       <div class="card" id="card-proc">
         <div class="card-head"><h3>llama-server</h3><span class="value" id="proc-value">—</span></div>
         <canvas class="spark" data-series="proc"></canvas>
-        <div class="card-foot"><span id="proc-extra" class="dim tiny">not running</span></div>
+        <div class="card-foot"><span id="proc-extra" class="dim tiny">nothing running</span></div>
       </div>
+    </div>
+
+    <div class="panel" id="servers-panel">
+      <div class="panel-head"><h2>Running servers</h2>
+        <span class="dim tiny" id="servers-hint"></span>
+      </div>
+      <div id="server-list"><p class="empty">no servers started yet</p></div>
     </div>
 
     <div class="tabs">
       <button class="tab active" data-tab="logs">Logs</button>
       <button class="tab" data-tab="chat">Test chat</button>
+      <button class="tab" data-tab="hub">Download</button>
       <button class="tab" data-tab="details">Details</button>
     </div>
 
     <div class="tab-panel active" id="tab-logs">
       <div class="panel-head log-head">
+        <select id="log-instance" class="input"><option value="">all servers</option></select>
         <input id="log-filter" class="input" type="search" placeholder="Filter log lines…">
         <label class="check"><input id="log-autoscroll" type="checkbox" checked> autoscroll</label>
         <button id="btn-clear-log" class="btn small ghost">Clear view</button>
@@ -118,6 +143,10 @@
     </div>
 
     <div class="tab-panel" id="tab-chat">
+      <div class="panel-head log-head">
+        <select id="chat-instance" class="input"></select>
+        <select id="chat-model" class="input" hidden></select>
+      </div>
       <div id="chat-log" class="chat-log"><p class="empty">Start a model, then send a prompt to check it responds.</p></div>
       <form id="chat-form" class="chat-form">
         <textarea id="chat-input" class="input" rows="2" placeholder="Ask something…"></textarea>
@@ -126,10 +155,21 @@
       <div class="dim tiny" id="chat-stats"></div>
     </div>
 
+    <div class="tab-panel" id="tab-hub">
+      <form id="hub-form" class="hub-search">
+        <input id="hub-query" class="input" type="search"
+               placeholder="Search Hugging Face for GGUF models, or paste an org/repo id">
+        <button class="btn primary" type="submit">Search</button>
+      </form>
+      <p class="dim tiny" id="hub-dest">—</p>
+      <div id="hub-downloads"></div>
+      <div id="hub-results" class="hub-results">
+        <p class="empty">Search for a model to see its GGUF files and sizes.</p>
+      </div>
+    </div>
+
     <div class="tab-panel" id="tab-details">
       <div class="detail-grid">
-        <div><h4>Command line</h4><pre id="d-argv" class="cmd">—</pre></div>
-        <div><h4>Throughput</h4><div id="d-stats" class="kv">—</div></div>
         <div><h4>System</h4><div id="d-system" class="kv">—</div></div>
         <div><h4>Other llama-server processes</h4><div id="d-external" class="kv">—</div></div>
       </div>

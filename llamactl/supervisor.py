@@ -1,8 +1,9 @@
-"""Lifecycle management for a single llama-server child process.
+"""Lifecycle management for llama-server child processes.
 
-One model is loaded at a time: switching models stops the running server and
-starts a new one. Output is merged into a bounded ring buffer and fanned out to
-websocket subscribers; a background poll of /health drives the state machine.
+Several models can run at once: each gets its own `ServerInstance` on its own
+port, with its own log ring buffer and health poll. `SupervisorPool` owns them,
+allocates ports, and fans every log line out to websocket subscribers tagged
+with the instance it came from.
 """
 
 from __future__ import annotations
@@ -19,12 +20,11 @@ from collections import deque
 from dataclasses import asdict
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
 from .config import Config, LaunchParams
-
 
 POSIX = os.name == "posix"
 
@@ -70,11 +70,12 @@ def _iter_process_cmdlines() -> Any:
             continue
 
 
-def find_external_servers(exclude_pid: int | None = None) -> list[dict[str, Any]]:
+def find_external_servers(exclude_pids: set[int] | None = None) -> list[dict[str, Any]]:
     """llama-server processes this controller did not start (never touched)."""
+    exclude = exclude_pids or set()
     out = []
     for pid, parts in _iter_process_cmdlines():
-        if pid == exclude_pid:
+        if pid in exclude:
             continue
         if not parts or "llama-server" not in os.path.basename(parts[0]):
             continue
@@ -88,58 +89,84 @@ def find_external_servers(exclude_pid: int | None = None) -> list[dict[str, Any]
 
 
 def port_in_use(host: str, port: int) -> bool:
-    family = socket.AF_INET
-    probe_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
-    with socket.socket(family, socket.SOCK_STREAM) as sock:
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
         return sock.connect_ex((probe_host, port)) == 0
 
 
-class LlamaSupervisor:
-    def __init__(self, cfg: Config) -> None:
+class ServerInstance:
+    """One llama-server process serving one model."""
+
+    def __init__(self, instance_id: int, cfg: Config, model_path: str,
+                 params: LaunchParams, on_log: Callable[[dict[str, Any]], None]) -> None:
+        self.id = instance_id
         self.cfg = cfg
+        self.model_path = model_path
+        self.params = params
+        self._on_log = on_log
         self.state = ServerState.STOPPED
         self.proc: asyncio.subprocess.Process | None = None
-        self.model_path: str = ""
-        self.params: LaunchParams | None = None
         self.argv: list[str] = []
-        self.started_at: float = 0.0
-        self.ready_at: float = 0.0
+        self.started_at = 0.0
+        self.ready_at = 0.0
         self.exit_code: int | None = None
-        self.last_error: str = ""
+        self.last_error = ""
         self.props: dict[str, Any] = {}
         self.stats: dict[str, Any] = {}
+        self.router_models: list[dict[str, Any]] = []
         self.logs: deque[dict[str, Any]] = deque(maxlen=cfg.log_buffer_lines)
-        self._subscribers: set[asyncio.Queue] = set()
         self._tasks: list[asyncio.Task] = []
-        self._lock = asyncio.Lock()
         self._client = httpx.AsyncClient(timeout=5.0)
 
-    # ---------------------------------------------------------------- helpers
+    # ---------------------------------------------------------------- basics
 
     @property
-    def bind(self) -> tuple[str, int]:
-        """Host/port of the running server, or what the next start would use."""
-        params = self.params or self.cfg.defaults
-        return params.host, params.port
+    def is_router(self) -> bool:
+        return self.params.mode == "router"
 
     @property
-    def base_url(self) -> str:
-        """Loopback URL the controller itself uses to reach the model server."""
-        host, port = self.bind
-        return f"http://{'127.0.0.1' if host in ('0.0.0.0', '::', '') else host}:{port}"
+    def name(self) -> str:
+        if self.is_router:
+            return f"router: {Path(self.params.models_dir).name or 'models'}"
+        return Path(self.model_path).name
 
     @property
     def pid(self) -> int | None:
         return self.proc.pid if self.proc and self.proc.returncode is None else None
 
-    def build_argv(self, model_path: str, params: LaunchParams) -> list[str]:
+    @property
+    def base_url(self) -> str:
+        host = self.params.host
+        loopback = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+        return f"http://{loopback}:{self.params.port}"
+
+    def add_log(self, line: str, stream: str = "server") -> None:
+        record = {"ts": time.time(), "stream": stream, "line": line,
+                  "instance": self.id, "model": self.name}
+        self.logs.append(record)
+        self._on_log(record)
+
+    def build_argv(self) -> list[str]:
+        params = self.params
         argv = [
             str(self.cfg.server_bin),
-            "-m", model_path,
             "--host", params.host,
             "--port", str(params.port),
             "--metrics",
+        ]
+        if self.is_router:
+            # the router owns model loading; per-model flags come from its presets
+            argv += ["--models-dir", str(Path(params.models_dir).expanduser()),
+                     "--models-max", str(params.models_max),
+                     "--models-autoload" if params.models_autoload else "--no-models-autoload"]
+            if params.extra_args.strip():
+                argv += shlex.split(params.extra_args)
+            return argv
+
+        argv += [
+            "-m", self.model_path,
+            "-a", Path(self.model_path).stem,
             "-ngl", str(params.n_gpu_layers),
             "-c", str(params.ctx_size),
             "-np", str(params.parallel),
@@ -159,113 +186,42 @@ class LlamaSupervisor:
             argv += shlex.split(params.extra_args)
         return argv
 
-    def add_log(self, line: str, stream: str = "server") -> None:
-        record = {"ts": time.time(), "stream": stream, "line": line}
-        self.logs.append(record)
-        for queue in list(self._subscribers):
-            try:
-                queue.put_nowait(record)
-            except asyncio.QueueFull:
-                self._subscribers.discard(queue)
-
-    def subscribe(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        self._subscribers.add(queue)
-        return queue
-
-    def unsubscribe(self, queue: asyncio.Queue) -> None:
-        self._subscribers.discard(queue)
-
     # ------------------------------------------------------------- lifecycle
 
-    async def start(self, model_path: str, params: LaunchParams) -> dict[str, Any]:
-        async with self._lock:
-            if self.state in (ServerState.STARTING, ServerState.READY):
-                await self._stop_locked()
+    async def start(self) -> None:
+        self.argv = self.build_argv()
+        self.exit_code = None
+        self.last_error = ""
+        self.props = {}
+        self.stats = {}
+        self.add_log(f"$ {' '.join(shlex.quote(a) for a in self.argv)}", "controller")
 
-            model = Path(model_path).expanduser()
-            if not model.is_file():
-                raise FileNotFoundError(f"model not found: {model}")
-            if not self.cfg.server_bin.is_file():
-                raise FileNotFoundError(f"llama-server not found: {self.cfg.server_bin}")
-
-            self.logs.clear()  # before clear_port so its notes survive
-            await self.clear_port(params.host, params.port)
-            self.argv = self.build_argv(str(model), params)
-            self.model_path = str(model)
-            self.params = params
-            self.exit_code = None
-            self.last_error = ""
-            self.props = {}
-            self.stats = {}
-            self.add_log(f"$ {' '.join(shlex.quote(a) for a in self.argv)}", "controller")
-
-            self.proc = await asyncio.create_subprocess_exec(
-                *self.argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=str(self.cfg.server_bin.parent),
-                start_new_session=POSIX,
-            )
-            self.state = ServerState.STARTING
-            self.started_at = time.time()
-            self.ready_at = 0.0
-            self._tasks = [
-                asyncio.create_task(self._pump_output()),
-                asyncio.create_task(self._watch_health()),
-            ]
-            return self.status()
-
-    def find_orphan(self, port: int | None = None) -> dict[str, Any] | None:
-        """A llama-server left on the given port by a previous controller run.
-
-        Matched strictly: same binary and same --port. Anything else holding the
-        port belongs to somebody else and is never signalled.
-        """
-        wanted = str(port if port is not None else self.bind[1])
-        for proc in find_external_servers(exclude_pid=self.pid):
-            if proc["port"] == wanted and Path(proc["binary"]) == self.cfg.server_bin:
-                return proc
-        return None
-
-    async def clear_port(self, host: str, port: int) -> None:
-        if not port_in_use(host, port):
-            return
-        orphan = self.find_orphan(port)
-        if orphan is None:
-            raise RuntimeError(
-                f"port {port} is already in use by another process — pick a different "
-                f"port or stop that process first"
-            )
-        self.add_log(
-            f"port {port} still held by orphaned llama-server (pid {orphan['pid']}) "
-            f"from an earlier run — terminating it",
-            "controller",
+        self.proc = await asyncio.create_subprocess_exec(
+            *self.argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(self.cfg.server_bin.parent),
+            start_new_session=POSIX,
         )
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(orphan["pid"], sig)
-            for _ in range(40):
-                await asyncio.sleep(0.25)
-                if not port_in_use(host, port):
-                    return
-        raise RuntimeError(f"could not free port {port} (pid {orphan['pid']})")
+        self.state = ServerState.STARTING
+        self.started_at = time.time()
+        self.ready_at = 0.0
+        self._tasks = [
+            asyncio.create_task(self._pump_output()),
+            asyncio.create_task(self._watch_health()),
+        ]
 
-    async def stop(self) -> dict[str, Any]:
-        async with self._lock:
-            await self._stop_locked()
-            return self.status()
-
-    async def _stop_locked(self, timeout: float = 20.0) -> None:
+    async def stop(self, timeout: float = 20.0) -> None:
         proc = self.proc
         if proc is None or proc.returncode is not None:
             self.state = ServerState.STOPPED
             self.proc = None
+            await self._cancel_tasks()
             return
         self.state = ServerState.STOPPING
         self.add_log("stopping llama-server (SIGTERM)", "controller")
         # signal the whole session so nothing is left behind if it forked
-        with contextlib.suppress(ProcessLookupError, PermissionError, AttributeError, OSError):
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             if POSIX:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             else:
@@ -284,18 +240,14 @@ class LlamaSupervisor:
         self.exit_code = proc.returncode
         self.proc = None
         self.state = ServerState.STOPPED
+        await self._cancel_tasks()
+
+    async def _cancel_tasks(self) -> None:
         for task in self._tasks:
             task.cancel()
         self._tasks = []
 
-    async def restart(self) -> dict[str, Any]:
-        if not self.model_path or self.params is None:
-            raise RuntimeError("nothing to restart — no model has been started yet")
-        model, params = self.model_path, self.params
-        await self.stop()
-        return await self.start(model, params)
-
-    async def shutdown(self) -> None:
+    async def close(self) -> None:
         await self.stop()
         await self._client.aclose()
 
@@ -327,7 +279,7 @@ class LlamaSupervisor:
         if match:
             kind, ms, tokens, tps = match.groups()
             key = {"prompt eval": "prompt", "eval": "generation", "total": "total"}[kind]
-            entry = {"ms": float(ms), "tokens": int(tokens)}
+            entry: dict[str, Any] = {"ms": float(ms), "tokens": int(tokens)}
             if tps:
                 entry["tokens_per_second"] = float(tps)
             self.stats[key] = entry
@@ -338,7 +290,6 @@ class LlamaSupervisor:
             self.last_error = line.strip()[:400]
 
     async def _watch_health(self) -> None:
-        """Poll /health until ready, then keep props and slot info fresh."""
         try:
             while True:
                 if self.proc is None or self.proc.returncode is not None:
@@ -350,9 +301,12 @@ class LlamaSupervisor:
                             self.state = ServerState.READY
                             self.ready_at = time.time()
                             self.last_error = ""  # startup warnings are not failures
-                            load_time = self.ready_at - self.started_at
-                            self.add_log(f"model ready in {load_time:.1f}s", "controller")
+                            self.add_log(
+                                f"model ready in {self.ready_at - self.started_at:.1f}s",
+                                "controller")
                             await self._refresh_props()
+                        elif self.is_router:
+                            await self.refresh_router_models()
                     elif self.state is ServerState.READY:
                         self.state = ServerState.STARTING
                 except httpx.HTTPError:
@@ -368,21 +322,59 @@ class LlamaSupervisor:
                 self.props = response.json()
         except (httpx.HTTPError, ValueError):
             pass
+        if self.is_router:
+            await self.refresh_router_models()
+
+    async def refresh_router_models(self) -> None:
+        """What the router knows about, and which of them are resident."""
+        try:
+            response = await self._client.get(f"{self.base_url}/v1/models")
+            if response.status_code != 200:
+                return
+            data = response.json().get("data", [])
+        except (httpx.HTTPError, ValueError):
+            return
+        self.router_models = [
+            {
+                "id": item.get("id", ""),
+                "status": (item.get("status") or {}).get("value", "unknown"),
+                "source": item.get("source", ""),
+                "modalities": (item.get("architecture") or {}).get("input_modalities", []),
+            }
+            for item in data
+        ]
+
+    async def router_action(self, action: str, model_id: str) -> dict[str, Any]:
+        """Ask the router to load or unload one of its models."""
+        if not self.is_router:
+            raise RuntimeError("this instance is not a router")
+        if action not in ("load", "unload"):
+            raise ValueError(action)
+        response = await self._client.post(
+            f"{self.base_url}/models/{action}", json={"model": model_id}, timeout=300.0
+        )
+        self.add_log(f"router {action} '{model_id}' -> HTTP {response.status_code}", "controller")
+        await self.refresh_router_models()
+        return {"status_code": response.status_code, "models": self.router_models}
 
     # ---------------------------------------------------------------- status
 
     def status(self) -> dict[str, Any]:
         now = time.time()
         return {
+            "id": self.id,
             "state": self.state.value,
             "pid": self.pid,
+            "mode": self.params.mode,
+            "is_router": self.is_router,
+            "router_models": self.router_models,
             "model_path": self.model_path,
-            "model_name": Path(self.model_path).name if self.model_path else "",
-            "params": asdict(self.params) if self.params else None,
+            "model_name": self.name,
+            "params": asdict(self.params),
             "argv": self.argv,
             "url": self.base_url,
-            "bind_host": self.bind[0],
-            "bind_port": self.bind[1],
+            "bind_host": self.params.host,
+            "bind_port": self.params.port,
             "uptime": round(now - self.started_at, 1) if self.started_at and self.pid else 0,
             "load_seconds": round(self.ready_at - self.started_at, 1) if self.ready_at else None,
             "exit_code": self.exit_code,
@@ -394,8 +386,176 @@ class LlamaSupervisor:
                 "ftype": self.props.get("model_ftype"),
                 "build": self.props.get("build_info", ""),
                 "chat_template": bool(self.props.get("chat_template")),
-                "modalities": self.props.get("modalities", {}),
-            }
-            if self.props
-            else {},
+            } if self.props else {},
         }
+
+
+class SupervisorPool:
+    """Every llama-server this controller runs, one per model."""
+
+    def __init__(self, cfg: Config) -> None:
+        self.cfg = cfg
+        self.instances: dict[int, ServerInstance] = {}
+        self._next_id = 1
+        self._subscribers: set[asyncio.Queue] = set()
+        self._lock = asyncio.Lock()
+
+    # ------------------------------------------------------------ log fanout
+
+    def _publish(self, record: dict[str, Any]) -> None:
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(record)
+            except asyncio.QueueFull:
+                self._subscribers.discard(queue)
+
+    def subscribe(self) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
+        self._subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
+        self._subscribers.discard(queue)
+
+    def recent_logs(self, limit: int = 300, instance_id: int | None = None) -> list[dict[str, Any]]:
+        if instance_id is not None:
+            instance = self.instances.get(instance_id)
+            return list(instance.logs)[-limit:] if instance else []
+        merged: list[dict[str, Any]] = []
+        for instance in self.instances.values():
+            merged.extend(instance.logs)
+        merged.sort(key=lambda r: r["ts"])
+        return merged[-limit:]
+
+    # ---------------------------------------------------------------- lookup
+
+    @property
+    def pids(self) -> set[int]:
+        return {i.pid for i in self.instances.values() if i.pid}
+
+    def get(self, instance_id: int) -> ServerInstance | None:
+        return self.instances.get(instance_id)
+
+    def by_model(self, model_path: str) -> ServerInstance | None:
+        for instance in self.instances.values():
+            if instance.model_path == model_path and instance.state is not ServerState.STOPPED:
+                return instance
+        return None
+
+    def ready(self) -> list[ServerInstance]:
+        return [i for i in self.instances.values() if i.state is ServerState.READY]
+
+    def status(self) -> list[dict[str, Any]]:
+        return [i.status() for i in sorted(self.instances.values(), key=lambda i: i.id)]
+
+    def used_ports(self) -> set[int]:
+        return {i.params.port for i in self.instances.values() if i.pid}
+
+    # ------------------------------------------------------------- lifecycle
+
+    def find_orphan(self, port: int) -> dict[str, Any] | None:
+        """A llama-server on `port` left behind by an earlier controller run."""
+        wanted = str(port)
+        for proc in find_external_servers(exclude_pids=self.pids):
+            if proc["port"] == wanted and Path(proc["binary"]) == self.cfg.server_bin:
+                return proc
+        return None
+
+    async def clear_port(self, host: str, port: int) -> bool:
+        """Free `port` if one of our own orphans holds it. True if it was cleared."""
+        if not port_in_use(host, port):
+            return False
+        orphan = self.find_orphan(port)
+        if orphan is None:
+            raise RuntimeError(
+                f"port {port} is in use by another process — pick a different port"
+            )
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(orphan["pid"], sig)
+            for _ in range(40):
+                await asyncio.sleep(0.25)
+                if not port_in_use(host, port):
+                    return True
+        raise RuntimeError(f"could not free port {port} (pid {orphan['pid']})")
+
+    async def _allocate_port(self, params: LaunchParams) -> tuple[int, str]:
+        """Return a usable port and a note if it differs from the one requested."""
+        wanted = params.port
+        if wanted not in self.used_ports():
+            with contextlib.suppress(RuntimeError):
+                if await self.clear_port(params.host, wanted):
+                    return wanted, f"cleared an orphaned llama-server from port {wanted}"
+            if not port_in_use(params.host, wanted):
+                return wanted, ""
+        for candidate in range(wanted + 1, wanted + 64):
+            if candidate in self.used_ports() or port_in_use(params.host, candidate):
+                continue
+            return candidate, f"port {wanted} was taken, using {candidate} instead"
+        raise RuntimeError(f"no free port found near {wanted}")
+
+    async def start(self, model_path: str, params: LaunchParams) -> dict[str, Any]:
+        async with self._lock:
+            if not self.cfg.server_bin.is_file():
+                raise FileNotFoundError(f"llama-server not found: {self.cfg.server_bin}")
+
+            if params.mode == "router":
+                directory = Path(params.models_dir).expanduser()
+                if not directory.is_dir():
+                    raise FileNotFoundError(f"models directory not found: {directory}")
+                params.models_dir = str(directory)
+                for other in self.instances.values():
+                    if (other.is_router and other.pid
+                            and other.params.models_dir == params.models_dir):
+                        raise RuntimeError(
+                            f"a router for {directory} is already running on port "
+                            f"{other.params.port}"
+                        )
+                resolved = ""
+            else:
+                model = Path(model_path).expanduser()
+                if not model.is_file():
+                    raise FileNotFoundError(f"model not found: {model}")
+                existing = self.by_model(str(model))
+                if existing is not None:
+                    raise RuntimeError(
+                        f"{model.name} is already running on port {existing.params.port} "
+                        f"— stop or restart that instance instead"
+                    )
+                resolved = str(model)
+
+            port, note = await self._allocate_port(params)
+            params.port = port
+
+            instance = ServerInstance(self._next_id, self.cfg, resolved, params, self._publish)
+            self._next_id += 1
+            self.instances[instance.id] = instance
+            if note:
+                instance.add_log(note, "controller")
+            await instance.start()
+            return instance.status()
+
+    async def stop(self, instance_id: int) -> dict[str, Any]:
+        instance = self.instances.get(instance_id)
+        if instance is None:
+            raise KeyError(instance_id)
+        await instance.stop()
+        return instance.status()
+
+    async def restart(self, instance_id: int) -> dict[str, Any]:
+        instance = self.instances.get(instance_id)
+        if instance is None:
+            raise KeyError(instance_id)
+        await instance.stop()
+        await instance.start()
+        return instance.status()
+
+    async def remove(self, instance_id: int) -> None:
+        instance = self.instances.pop(instance_id, None)
+        if instance is not None:
+            await instance.close()
+
+    async def shutdown(self) -> None:
+        await asyncio.gather(*(i.close() for i in self.instances.values()),
+                             return_exceptions=True)
+        self.instances.clear()

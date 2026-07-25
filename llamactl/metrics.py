@@ -99,9 +99,15 @@ class ProcessSampler:
 
     def sample(self, pid: int | None) -> dict[str, Any] | None:
         if not pid:
-            self._prev.clear()
             return None
         return self._sample_proc(pid) if HAS_PROC else self._sample_psutil(pid)
+
+    def retain(self, pids: Iterable[int]) -> None:
+        """Forget CPU baselines for processes that are gone."""
+        keep = set(pids)
+        for pid in list(self._prev):
+            if pid not in keep:
+                del self._prev[pid]
 
     def _cpu_percent(self, pid: int, cpu_seconds: float) -> float:
         now = time.monotonic()
@@ -264,6 +270,24 @@ class Monitor:
             "gpus": self.gpu.describe(),
             "metrics_source": "procfs" if HAS_PROC else ("psutil" if psutil else "limited"),
         }
+
+    def sample_many(self, pids: Iterable[int]) -> dict[str, Any]:
+        """A system sample plus per-process readings for several servers."""
+        pids = list(pids)
+        self.proc.retain(pids)
+        sample = self.sample()
+        sample["processes"] = {
+            pid: proc for pid in pids if (proc := self.proc.sample(pid)) is not None
+        }
+        totals = {"cpu_percent": 0.0, "rss": 0, "threads": 0}
+        for proc in sample["processes"].values():
+            totals["cpu_percent"] = round(totals["cpu_percent"] + proc["cpu_percent"], 1)
+            totals["rss"] += proc["rss"]
+            totals["threads"] += proc["threads"]
+        totals["count"] = len(sample["processes"])
+        sample["process_total"] = totals
+        self.history[-1] = sample  # replace the entry `sample()` just appended
+        return sample
 
     def sample(self, pid: int | None = None) -> dict[str, Any]:
         disks = {}

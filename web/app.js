@@ -6,15 +6,17 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 const state = {
   models: [],
   selected: null,
-  server: { state: "stopped" },
+  servers: [],          // one entry per llama-server this controller runs
   info: null,
   logs: [],
+  mode: "single",       // single | router
   series: { cpu: [], mem: [], proc: [] },
   gpuCount: 0,
   maxPoints: 120,
 };
 
 const GPU_COLORS = ["#a371f7", "#f778ba", "#56d4dd", "#e3b341"];
+const LIVE = ["starting", "ready", "stopping"];
 
 /* --------------------------------------------------------------- helpers */
 
@@ -34,6 +36,11 @@ function duration(seconds) {
   return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
 }
 
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "content-type": "application/json" },
@@ -47,6 +54,7 @@ async function api(path, options = {}) {
 /* ------------------------------------------------------------ sparklines */
 
 function drawSpark(canvas, values, color, max) {
+  if (!canvas) return;
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth, height = canvas.clientHeight;
   if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
@@ -94,8 +102,13 @@ function push(series, value) {
   if (arr.length > state.maxPoints) arr.shift();
 }
 
-/* GPU cards are built from whatever the backend reports: AMD, NVIDIA, Intel,
-   one card or several. */
+/* -------------------------------------------------------------- GPU cards */
+
+function memPercent(gpu) {
+  if (!gpu.mem_total || gpu.mem_used === null || gpu.mem_used === undefined) return null;
+  return Math.round((gpu.mem_used / gpu.mem_total) * 100);
+}
+
 function ensureGpuCards(gpus) {
   if (state.gpuCount === gpus.length) return;
   state.gpuCount = gpus.length;
@@ -109,7 +122,7 @@ function ensureGpuCards(gpus) {
   host.innerHTML = gpus.map((gpu, i) => `
     <div class="card">
       <div class="card-head">
-        <h3 title="${gpu.name || ""}">${gpu.vendor || "GPU"}${gpus.length > 1 ? ` #${i}` : ""}</h3>
+        <h3 title="${escapeHtml(gpu.name || "")}">${escapeHtml(gpu.vendor || "GPU")}${gpus.length > 1 ? ` #${i}` : ""}</h3>
         <span class="value" id="gpu-value-${i}">—</span>
       </div>
       <canvas class="spark" data-series="gpu${i}"></canvas>
@@ -122,23 +135,19 @@ function renderGpus(gpus) {
   ensureGpuCards(gpus);
   gpus.forEach((gpu, i) => {
     const color = GPU_COLORS[i % GPU_COLORS.length];
+    const pct = memPercent(gpu);
     if (gpu.busy !== null && gpu.busy !== undefined) {
       push(`gpu${i}`, gpu.busy);
       $(`#gpu-value-${i}`).textContent = `${Math.round(gpu.busy)}%`;
     } else {
-      $(`#gpu-value-${i}`).textContent = memPercent(gpu) !== null ? `${memPercent(gpu)}%` : "—";
+      $(`#gpu-value-${i}`).textContent = pct !== null ? `${pct}%` : "—";
     }
     drawSpark($(`canvas[data-series="gpu${i}"]`), state.series[`gpu${i}`] || [], color, 100);
-
-    const pct = memPercent(gpu);
     $(`#gpu-bar-${i}`).style.width = `${pct ?? 0}%`;
+
     const bits = [];
-    if (gpu.mem_total) {
-      bits.push(`${gpu.mem_label || "mem"} ${bytes(gpu.mem_used)}/${bytes(gpu.mem_total)}`);
-    }
-    if (gpu.extra && gpu.extra.gtt_total && gpu.mem_label !== "GTT") {
-      bits.push(`GTT ${bytes(gpu.extra.gtt_used)}`);
-    }
+    if (gpu.mem_total) bits.push(`${gpu.mem_label || "mem"} ${bytes(gpu.mem_used)}/${bytes(gpu.mem_total)}`);
+    if (gpu.extra && gpu.extra.gtt_total && gpu.mem_label !== "GTT") bits.push(`GTT ${bytes(gpu.extra.gtt_used)}`);
     if (gpu.temp) bits.push(`${gpu.temp}°C`);
     if (gpu.power) bits.push(`${gpu.power} W`);
     if (gpu.clock_mhz) bits.push(`${Math.round(gpu.clock_mhz)} MHz`);
@@ -147,15 +156,10 @@ function renderGpus(gpus) {
   });
 }
 
-function memPercent(gpu) {
-  if (!gpu.mem_total || gpu.mem_used === null || gpu.mem_used === undefined) return null;
-  return Math.round((gpu.mem_used / gpu.mem_total) * 100);
-}
-
 /* --------------------------------------------------------------- metrics */
 
 function renderMetrics(sample) {
-  const { cpu, mem, process: proc } = sample;
+  const { cpu, mem } = sample;
 
   push("cpu", cpu.percent);
   $("#cpu-value").textContent = `${cpu.percent.toFixed(0)}%`;
@@ -168,9 +172,9 @@ function renderMetrics(sample) {
     cores.children[i].style.height = `${Math.max(2, v)}%`;
     cores.children[i].style.opacity = 0.35 + (v / 100) * 0.65;
   });
-  const load = sample.load.map((v) => v.toFixed(2)).join(" ");
   $("#cpu-extra").textContent =
-    `load ${load}` + (sample.cpu_temp ? ` · ${sample.cpu_temp}°C` : "");
+    `load ${sample.load.map((v) => v.toFixed(2)).join(" ")}` +
+    (sample.cpu_temp ? ` · ${sample.cpu_temp}°C` : "");
 
   push("mem", mem.percent);
   $("#mem-value").textContent = `${mem.percent.toFixed(0)}%`;
@@ -182,74 +186,167 @@ function renderMetrics(sample) {
 
   renderGpus(sample.gpus || []);
 
-  if (proc) {
-    push("proc", proc.cpu_percent);
-    $("#proc-value").textContent = `${proc.cpu_percent.toFixed(0)}%`;
+  const totals = sample.process_total || { count: 0 };
+  if (totals.count) {
+    push("proc", totals.cpu_percent);
+    $("#proc-value").textContent = `${totals.cpu_percent.toFixed(0)}%`;
     drawSpark($('canvas[data-series="proc"]'), state.series.proc, "#d29922", null);
     $("#proc-extra").textContent =
-      `pid ${proc.pid} · RSS ${bytes(proc.rss)} · ${proc.threads} threads · up ${duration(proc.elapsed)}`;
+      `${totals.count} process${totals.count === 1 ? "" : "es"} · RSS ${bytes(totals.rss)} · ${totals.threads} threads`;
   } else {
     $("#proc-value").textContent = "—";
-    $("#proc-extra").textContent = "not running";
+    $("#proc-extra").textContent = "nothing running";
     state.series.proc = [];
     drawSpark($('canvas[data-series="proc"]'), [], "#d29922", null);
   }
 }
 
-/* ---------------------------------------------------------------- status */
+/* --------------------------------------------------------------- servers */
 
-function renderServer(server) {
-  state.server = server;
-  const pill = $("#state-pill");
-  pill.textContent = server.state;
-  pill.dataset.state = server.state;
+function serverCard(server) {
+  const meta = [];
+  if (server.pid) meta.push(`pid ${server.pid}`);
+  if (server.load_seconds) meta.push(`loaded in ${server.load_seconds}s`);
+  if (server.uptime) meta.push(`up ${duration(server.uptime)}`);
+  if (server.process) meta.push(`${server.process.cpu_percent.toFixed(0)}% CPU · ${bytes(server.process.rss)}`);
+  const gen = server.stats && server.stats.generation;
+  if (gen && gen.tokens_per_second) meta.push(`${gen.tokens_per_second.toFixed(1)} tok/s`);
+  if (server.model_meta && server.model_meta.n_ctx) meta.push(`ctx ${server.model_meta.n_ctx.toLocaleString()}`);
 
-  $("#running-model").textContent = server.model_name || "no model loaded";
-  $("#uptime").textContent = server.pid ? `up ${duration(server.uptime)}` : "";
+  const host = ["0.0.0.0", "::", ""].includes(server.bind_host) ? location.hostname : server.bind_host;
+  const url = `http://${host}:${server.bind_port}`;
+  const stopped = !server.pid;
 
-  // what someone on another machine should point their client at
-  const link = $("#endpoint-link");
-  if (server.pid && server.bind_port) {
-    const host = ["0.0.0.0", "::", ""].includes(server.bind_host)
-      ? location.hostname : server.bind_host;
-    link.href = `http://${host}:${server.bind_port}`;
-    link.textContent = `${host}:${server.bind_port}`;
-    link.title = server.bind_host === "0.0.0.0"
-      ? "reachable from other machines" : "bound to " + server.bind_host;
-    link.hidden = false;
+  return `<div class="server" data-id="${server.id}">
+      <div class="server-head">
+        <span class="pill" data-state="${server.state}">${server.state}</span>
+        <span class="server-name">${escapeHtml(server.model_name)}</span>
+        <a class="endpoint" href="${url}" target="_blank" rel="noopener">${escapeHtml(url)}</a>
+        <span class="server-actions">
+          <button class="btn small" data-action="restart" data-id="${server.id}">Restart</button>
+          <button class="btn small ${stopped ? "" : "danger"}" data-action="${stopped ? "remove" : "stop"}"
+                  data-id="${server.id}">${stopped ? "Remove" : "Stop"}</button>
+        </span>
+      </div>
+      <div class="server-meta dim tiny">${meta.join(" · ") || "&nbsp;"}</div>
+      ${server.last_error ? `<div class="server-error tiny">${escapeHtml(server.last_error)}</div>` : ""}
+      ${server.is_router ? routerModels(server) : ""}
+    </div>`;
+}
+
+function routerModels(server) {
+  if (!server.router_models.length) {
+    return '<div class="router-models dim tiny">router has no models yet</div>';
+  }
+  const rows = server.router_models.map((m) => {
+    const loaded = m.status === "loaded";
+    return `<div class="router-row">
+        <span class="dot-state ${loaded ? "on" : ""}"></span>
+        <span class="router-id" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</span>
+        <span class="dim tiny">${escapeHtml(m.source || "")}</span>
+        <button class="btn small ghost" data-router="${loaded ? "unload" : "load"}"
+                data-id="${server.id}" data-model="${escapeHtml(m.id)}">${loaded ? "Unload" : "Load"}</button>
+      </div>`;
+  }).join("");
+  const loaded = server.router_models.filter((m) => m.status === "loaded").length;
+  return `<div class="router-models">
+      <div class="dim tiny">${server.router_models.length} models · ${loaded} loaded
+        (max ${server.params.models_max})</div>
+      ${rows}
+    </div>`;
+}
+
+function renderServers(servers) {
+  state.servers = servers;
+  const live = servers.filter((s) => LIVE.includes(s.state));
+  const ready = servers.filter((s) => s.state === "ready");
+
+  const pill = $("#summary-pill");
+  pill.textContent = live.length ? `${live.length} running` : "no servers";
+  pill.dataset.state = ready.length ? "ready" : live.length ? "starting" : "stopped";
+  $("#summary-detail").textContent = ready.length
+    ? ready.map((s) => `${s.model_name} :${s.bind_port}`).join(" · ")
+    : "";
+  $("#btn-stop-all").disabled = !live.length;
+
+  const list = $("#server-list");
+  list.innerHTML = servers.length
+    ? servers.map(serverCard).join("")
+    : '<p class="empty">no servers started yet</p>';
+
+  list.querySelectorAll("button[data-action]").forEach((button) => {
+    button.onclick = async () => {
+      const { action, id } = button.dataset;
+      button.disabled = true;
+      try {
+        await api(`/api/server/${action}`, { method: "POST", body: JSON.stringify({ id: +id }) });
+      } catch (err) {
+        alert(err.message);
+        button.disabled = false;
+      }
+    };
+  });
+  list.querySelectorAll("button[data-router]").forEach((button) => {
+    button.onclick = async () => {
+      const label = button.textContent;
+      button.disabled = true;
+      button.textContent = button.dataset.router === "load" ? "loading…" : "unloading…";
+      try {
+        await api(`/api/router/${button.dataset.router}`, {
+          method: "POST",
+          body: JSON.stringify({ id: +button.dataset.id, model: button.dataset.model }),
+        });
+      } catch (err) {
+        alert(err.message);
+        button.textContent = label;
+        button.disabled = false;
+      }
+    };
+  });
+
+  syncInstanceSelects(servers);
+  $$(".model").forEach((el) => {
+    const running = servers.find((s) => s.model_path === el.dataset.path && s.pid);
+    el.classList.toggle("running", Boolean(running));
+  });
+  $("#servers-hint").textContent = servers.length
+    ? "each server is a separate llama-server process"
+    : "";
+}
+
+function syncInstanceSelects(servers) {
+  const options = servers
+    .filter((s) => LIVE.includes(s.state))
+    .map((s) => `<option value="${s.id}">${escapeHtml(s.model_name)} :${s.bind_port}</option>`)
+    .join("");
+
+  const logSelect = $("#log-instance");
+  const keepLog = logSelect.value;
+  logSelect.innerHTML = `<option value="">all servers</option>${options}`;
+  logSelect.value = keepLog;
+
+  const chatSelect = $("#chat-instance");
+  const keepChat = chatSelect.value;
+  chatSelect.innerHTML = options || '<option value="">no server running</option>';
+  if ([...chatSelect.options].some((o) => o.value === keepChat)) chatSelect.value = keepChat;
+  updateChatModels();
+}
+
+function updateChatModels() {
+  const server = state.servers.find((s) => String(s.id) === $("#chat-instance").value);
+  const select = $("#chat-model");
+  if (server && server.is_router && server.router_models.length) {
+    const keep = select.value;
+    select.innerHTML = server.router_models
+      .map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.id)}${m.status === "loaded" ? " ✓" : ""}</option>`)
+      .join("");
+    if ([...select.options].some((o) => o.value === keep)) select.value = keep;
+    select.hidden = false;
   } else {
-    link.hidden = true;
+    select.hidden = true;
+    select.innerHTML = "";
   }
-  $("#btn-stop").disabled = !server.pid;
-  $("#btn-restart").disabled = !server.model_path;
-  $("#chat-send").disabled = server.state !== "ready";
-  $("#d-argv").textContent = (server.argv || []).join(" ") || "—";
-
-  const rows = [];
-  if (server.load_seconds) rows.push(["load time", `${server.load_seconds}s`]);
-  if (server.url) rows.push(["endpoint", server.url]);
-  const stats = server.stats || {};
-  if (stats.prompt) {
-    rows.push(["prompt eval",
-      `${stats.prompt.tokens} tok @ ${(stats.prompt.tokens_per_second || 0).toFixed(1)} tok/s`]);
-  }
-  if (stats.generation) {
-    rows.push(["generation",
-      `${stats.generation.tokens} tok @ ${(stats.generation.tokens_per_second || 0).toFixed(1)} tok/s`]);
-  }
-  const meta = server.model_meta || {};
-  if (meta.n_ctx) rows.push(["n_ctx", meta.n_ctx.toLocaleString()]);
-  if (meta.slots) rows.push(["slots", meta.slots]);
-  if (meta.build) rows.push(["build", meta.build]);
-  if (server.exit_code !== null && server.exit_code !== undefined) {
-    rows.push(["exit code", server.exit_code]);
-  }
-  if (server.last_error) rows.push(["last error", server.last_error]);
-  $("#d-stats").innerHTML = rows.length
-    ? rows.map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join("")
-    : "—";
-
-  $$(".model").forEach((el) => el.classList.toggle("running", el.dataset.path === server.model_path));
+  $("#chat-send").disabled = !(server && server.state === "ready");
 }
 
 /* ---------------------------------------------------------------- models */
@@ -262,8 +359,10 @@ function modelRow(model) {
   meta.push(bytes(model.size));
   if (model.n_ctx_train) meta.push(`ctx ${model.n_ctx_train.toLocaleString()}`);
   if (model.n_layer) meta.push(`${model.n_layer}L`);
-  return `<div class="model" data-path="${model.path}">
-      <div class="model-name">${model.name}</div>
+  const repo = model.repo ? `<div class="model-repo">${escapeHtml(model.repo)}</div>` : "";
+  return `<div class="model" data-path="${escapeHtml(model.path)}" title="${escapeHtml(model.path)}">
+      <div class="model-name">${escapeHtml(model.name)}</div>
+      ${repo}
       <div class="model-meta">${meta.join(" ")}</div>
     </div>`;
 }
@@ -278,7 +377,8 @@ function renderModels() {
 
   list.querySelectorAll(".model").forEach((el) => {
     el.classList.toggle("selected", el.dataset.path === state.selected);
-    el.classList.toggle("running", el.dataset.path === state.server.model_path);
+    el.classList.toggle("running",
+      state.servers.some((s) => s.model_path === el.dataset.path && s.pid));
     el.onclick = () => selectModel(el.dataset.path);
   });
 }
@@ -287,21 +387,27 @@ function selectModel(path) {
   state.selected = path;
   const model = state.models.find((m) => m.path === path);
   if (model && model.params) setParams(model.params);
-  $("#btn-start").disabled = false;
-  $("#btn-start").textContent = state.server.pid ? "Switch to this model" : "Start model";
+  setMode("single");
   renderModels();
+  updateStartButton();
   updatePreview();
 }
 
 async function loadModels() {
-  $("#model-list").innerHTML = '<p class="empty">scanning…</p>';
   try {
     const data = await api("/api/models");
     state.models = data.models;
-    $("#model-dirs").textContent = `scanned: ${data.dirs.join(", ")}`;
+    const skipped = data.skipped || [];
+    let note = `${data.models.length} model${data.models.length === 1 ? "" : "s"} in ${data.dirs.join(", ")}`;
+    if (skipped.length) {
+      const reasons = [...new Set(skipped.map((s) => s.reason))].join(", ");
+      note += ` · ${skipped.length} skipped (${reasons})`;
+    }
+    $("#model-dirs").textContent = note;
+    $("#model-dirs").title = skipped.map((s) => `${s.name} — ${s.reason}`).join("\n");
     renderModels();
   } catch (err) {
-    $("#model-list").innerHTML = `<p class="empty">scan failed: ${err.message}</p>`;
+    $("#model-list").innerHTML = `<p class="empty">scan failed: ${escapeHtml(err.message)}</p>`;
   }
 }
 
@@ -309,8 +415,12 @@ async function loadModels() {
 
 function getParams() {
   return {
+    mode: state.mode,
     host: $("#p-host").value.trim() || "0.0.0.0",
     port: +$("#p-port").value,
+    models_dir: $("#p-models-dir").value.trim(),
+    models_max: +$("#p-models-max").value,
+    models_autoload: $("#p-autoload").checked,
     n_gpu_layers: +$("#p-ngl").value,
     ctx_size: +$("#p-ctx").value,
     threads: +$("#p-threads").value,
@@ -327,6 +437,9 @@ function getParams() {
 function setParams(p) {
   $("#p-host").value = p.host ?? "0.0.0.0";
   $("#p-port").value = p.port ?? 8090;
+  if (p.models_dir) $("#p-models-dir").value = p.models_dir;
+  $("#p-models-max").value = p.models_max ?? 2;
+  $("#p-autoload").checked = p.models_autoload !== false;
   $("#p-ngl").value = p.n_gpu_layers;
   $("#p-ctx").value = p.ctx_size;
   $("#p-threads").value = p.threads;
@@ -339,19 +452,50 @@ function setParams(p) {
   $("#p-extra").value = p.extra_args || "";
 }
 
+function setMode(mode) {
+  state.mode = mode;
+  $$(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  $$(".single-only").forEach((el) => el.classList.toggle("hidden", mode !== "single"));
+  $$(".router-only").forEach((el) => el.classList.toggle("hidden", mode !== "router"));
+  $("#mode-help").textContent = mode === "router"
+    ? "One llama-server hosts a whole directory and loads models on demand — llama.cpp's own router."
+    : "Starts one llama-server per model — run as many as memory allows.";
+  updateStartButton();
+  updatePreview();
+}
+
+function updateStartButton() {
+  const button = $("#btn-start");
+  if (state.mode === "router") {
+    button.disabled = !$("#p-models-dir").value.trim();
+    button.textContent = "Start router";
+  } else {
+    button.disabled = !state.selected;
+    button.textContent = state.selected ? "Start model" : "Select a model to start";
+  }
+}
+
 function updatePreview() {
-  if (!state.selected || !state.info) { $("#cmd-preview").textContent = ""; return; }
+  if (!state.info) return;
   const p = getParams();
-  const cfg = state.info.config;
-  const argv = [cfg.llama_server_bin, "-m", state.selected,
-    "--host", p.host, "--port", p.port, "--metrics",
-    "-ngl", p.n_gpu_layers, "-c", p.ctx_size, "-np", p.parallel];
-  if (p.threads) argv.push("-t", p.threads);
-  if (p.batch_size) argv.push("-b", p.batch_size);
-  if (p.flash_attn) argv.push("-fa", p.flash_attn);
-  if (p.mlock) argv.push("--mlock");
-  if (p.no_mmap) argv.push("--no-mmap");
-  argv.push(p.jinja ? "--jinja" : "--no-jinja");
+  const bin = state.info.config.llama_server_bin;
+  let argv;
+  if (p.mode === "router") {
+    if (!p.models_dir) { $("#cmd-preview").textContent = ""; return; }
+    argv = [bin, "--host", p.host, "--port", p.port, "--metrics",
+      "--models-dir", p.models_dir, "--models-max", p.models_max,
+      p.models_autoload ? "--models-autoload" : "--no-models-autoload"];
+  } else {
+    if (!state.selected) { $("#cmd-preview").textContent = ""; return; }
+    argv = [bin, "--host", p.host, "--port", p.port, "--metrics",
+      "-m", state.selected, "-ngl", p.n_gpu_layers, "-c", p.ctx_size, "-np", p.parallel];
+    if (p.threads) argv.push("-t", p.threads);
+    if (p.batch_size) argv.push("-b", p.batch_size);
+    if (p.flash_attn) argv.push("-fa", p.flash_attn);
+    if (p.mlock) argv.push("--mlock");
+    if (p.no_mmap) argv.push("--no-mmap");
+    argv.push(p.jinja ? "--jinja" : "--no-jinja");
+  }
   if (p.extra_args.trim()) argv.push(p.extra_args.trim());
   $("#cmd-preview").textContent = argv.join(" ");
 }
@@ -363,15 +507,21 @@ function logLine(record) {
   let cls = record.stream === "controller" ? "controller" : "";
   if (/error|failed|abort/i.test(record.line)) cls = "err";
   else if (/warn/i.test(record.line)) cls = "warn";
-  const escaped = record.line.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-  return `<span class="l ${cls}"><span class="ts">${time}</span>${escaped}</span>`;
+  const tag = record.model ? `<span class="ltag">${escapeHtml(record.model.slice(0, 22))}</span>` : "";
+  return `<span class="l ${cls}"><span class="ts">${time}</span>${tag}${escapeHtml(record.line)}</span>`;
+}
+
+function logVisible(record) {
+  const instance = $("#log-instance").value;
+  if (instance && String(record.instance) !== instance) return false;
+  const filter = $("#log-filter").value.toLowerCase();
+  return !filter || record.line.toLowerCase().includes(filter);
 }
 
 function appendLog(record) {
   state.logs.push(record);
   if (state.logs.length > 5000) state.logs.shift();
-  const filter = $("#log-filter").value.toLowerCase();
-  if (filter && !record.line.toLowerCase().includes(filter)) return;
+  if (!logVisible(record)) return;
   const view = $("#log-view");
   const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 40;
   view.insertAdjacentHTML("beforeend", logLine(record));
@@ -379,12 +529,8 @@ function appendLog(record) {
 }
 
 function renderLogs() {
-  const filter = $("#log-filter").value.toLowerCase();
   const view = $("#log-view");
-  view.innerHTML = state.logs
-    .filter((r) => !filter || r.line.toLowerCase().includes(filter))
-    .map(logLine)
-    .join("");
+  view.innerHTML = state.logs.filter(logVisible).map(logLine).join("");
   view.scrollTop = view.scrollHeight;
 }
 
@@ -403,23 +549,142 @@ function connect() {
     const { type, data } = JSON.parse(event.data);
     if (type === "metrics") {
       renderMetrics(data);
-      renderServer(data.server);
+      renderServers(data.servers || []);
+      renderDownloads(data.downloads || []);
     } else if (type === "log") {
       appendLog(data);
     } else if (type === "hello") {
       state.logs = data.logs || [];
       renderLogs();
-      renderServer(data.server);
-      data.history.forEach((s) => {
+      renderServers(data.servers || []);
+      (data.history || []).forEach((s) => {
         push("cpu", s.cpu.percent);
         push("mem", s.mem.percent);
         (s.gpus || []).forEach((g, i) => {
           if (g.busy !== null && g.busy !== undefined) push(`gpu${i}`, g.busy);
         });
-        if (s.process) push("proc", s.process.cpu_percent);
+        if (s.process_total && s.process_total.count) push("proc", s.process_total.cpu_percent);
       });
     }
   };
+}
+
+/* ----------------------------------------------------- huggingface hub */
+
+function repoRow(repo) {
+  return `<div class="repo" data-repo="${escapeHtml(repo.id)}">
+      <div class="repo-head">
+        <span class="repo-id">${escapeHtml(repo.id)}</span>
+        <span class="repo-stats dim tiny">↓ ${repo.downloads.toLocaleString()} · ♥ ${repo.likes}</span>
+      </div>
+      <div class="repo-files" hidden></div>
+    </div>`;
+}
+
+function fileRow(repo, file) {
+  const disabled = file.is_projector ? "disabled" : "";
+  const label = file.is_projector ? "projector" : "Download";
+  return `<div class="file-row ${file.is_projector ? "projector" : ""}">
+      <span class="fname">${escapeHtml(file.name)}</span>
+      <span class="fsize">${bytes(file.size)}</span>
+      <button class="btn small" data-repo="${escapeHtml(repo)}" data-path="${escapeHtml(file.path)}" ${disabled}>${label}</button>
+    </div>`;
+}
+
+async function toggleRepo(card) {
+  const box = card.querySelector(".repo-files");
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  if (box.dataset.loaded) return;
+  box.innerHTML = '<p class="empty">loading files…</p>';
+  try {
+    const repo = card.dataset.repo;
+    const data = await api(`/api/hub/files?repo=${encodeURIComponent(repo)}`);
+    box.innerHTML = data.files.length
+      ? data.files.map((f) => fileRow(repo, f)).join("")
+      : '<p class="empty">no .gguf files in this repo</p>';
+    box.dataset.loaded = "1";
+    box.querySelectorAll("button[data-path]").forEach((button) => {
+      button.onclick = async (event) => {
+        event.stopPropagation();
+        button.disabled = true;
+        button.textContent = "starting…";
+        try {
+          await api("/api/hub/download", {
+            method: "POST",
+            body: JSON.stringify({ repo: button.dataset.repo, path: button.dataset.path }),
+          });
+          button.textContent = "queued";
+        } catch (err) {
+          button.textContent = "Download";
+          button.disabled = false;
+          alert(err.message);
+        }
+      };
+    });
+  } catch (err) {
+    box.innerHTML = `<p class="empty">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function hubSearch(event) {
+  event.preventDefault();
+  const query = $("#hub-query").value.trim();
+  if (!query) return;
+  const results = $("#hub-results");
+  results.innerHTML = '<p class="empty">searching…</p>';
+  try {
+    const data = await api(`/api/hub/search?q=${encodeURIComponent(query)}`);
+    const rows = data.results;
+    // a pasted "org/repo" is offered directly as well as searched for
+    if (query.includes("/") && !rows.some((r) => r.id === query)) {
+      rows.unshift({ id: query, downloads: 0, likes: 0 });
+    }
+    results.innerHTML = rows.length ? rows.map(repoRow).join("") : '<p class="empty">nothing found</p>';
+    results.querySelectorAll(".repo").forEach((card) => {
+      card.querySelector(".repo-head").onclick = () => toggleRepo(card);
+    });
+    if (rows.length === 1) toggleRepo(results.querySelector(".repo"));
+  } catch (err) {
+    results.innerHTML = `<p class="empty">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderDownloads(downloads) {
+  const host = $("#hub-downloads");
+  if (!downloads.length) { host.innerHTML = ""; return; }
+
+  // a finished download means a new file on disk — refresh the model list once
+  const finished = downloads.filter((d) => d.status === "done").map((d) => d.id).join(",");
+  if (state.finishedDownloads !== finished) {
+    if (state.finishedDownloads !== undefined) loadModels();
+    state.finishedDownloads = finished;
+  }
+
+  host.innerHTML = downloads.map((d) => {
+    const speed = d.status === "downloading" ? ` · ${bytes(d.speed)}/s` : "";
+    const eta = d.eta ? ` · ${duration(d.eta)} left` : "";
+    const detail = d.status === "error" ? escapeHtml(d.error)
+      : `${bytes(d.downloaded)} / ${bytes(d.total)}${speed}${eta}`;
+    const action = ["queued", "downloading"].includes(d.status) ? "Cancel" : "Dismiss";
+    return `<div class="dl" data-status="${d.status}">
+        <div class="dl-head">
+          <span class="dl-name">${escapeHtml(d.name)}</span>
+          <span class="dim tiny">${escapeHtml(d.repo)}</span>
+          <span class="dl-pct">${d.status === "done" ? "done" : d.percent + "%"}</span>
+          <button class="btn small ghost" data-cancel="${d.id}">${action}</button>
+        </div>
+        <div class="bar"><div class="bar-fill" style="width:${d.percent}%"></div></div>
+        <div class="dim tiny">${detail}</div>
+      </div>`;
+  }).join("");
+
+  host.querySelectorAll("button[data-cancel]").forEach((button) => {
+    button.onclick = () => api("/api/hub/cancel", {
+      method: "POST",
+      body: JSON.stringify({ id: +button.dataset.cancel }),
+    }).catch((err) => alert(err.message));
+  });
 }
 
 /* ------------------------------------------------------------------ chat */
@@ -428,8 +693,10 @@ async function sendChat(event) {
   event.preventDefault();
   const input = $("#chat-input");
   const text = input.value.trim();
-  if (!text) return;
+  const instance = $("#chat-instance").value;
+  if (!text || !instance) return;
   input.value = "";
+
   const log = $("#chat-log");
   log.querySelector(".empty")?.remove();
   log.insertAdjacentHTML("beforeend", `<div class="msg user"></div>`);
@@ -438,14 +705,19 @@ async function sendChat(event) {
   const bubble = log.lastElementChild;
   log.scrollTop = log.scrollHeight;
 
+  const body = { instance: +instance, messages: [{ role: "user", content: text }], max_tokens: 512 };
+  const modelSelect = $("#chat-model");
+  if (!modelSelect.hidden && modelSelect.value) body.model = modelSelect.value;
+
   const started = performance.now();
-  let tokens = 0;
+  let chunks = 0;
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ messages: [{ role: "user", content: text }], max_tokens: 512 }),
+      body: JSON.stringify(body),
     });
+    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -462,13 +734,12 @@ async function sendChat(event) {
         try {
           const chunk = JSON.parse(payload);
           const delta = chunk.choices?.[0]?.delta?.content;
-          if (delta) { bubble.textContent += delta; tokens++; log.scrollTop = log.scrollHeight; }
+          if (delta) { bubble.textContent += delta; chunks++; log.scrollTop = log.scrollHeight; }
         } catch { /* partial frame */ }
       }
     }
     const seconds = (performance.now() - started) / 1000;
-    $("#chat-stats").textContent =
-      `${tokens} chunks in ${seconds.toFixed(1)}s (~${(tokens / seconds).toFixed(1)}/s)`;
+    $("#chat-stats").textContent = `${chunks} chunks in ${seconds.toFixed(1)}s`;
   } catch (err) {
     bubble.classList.add("err");
     bubble.textContent = `error: ${err.message}`;
@@ -479,60 +750,79 @@ async function sendChat(event) {
 
 async function init() {
   state.info = await api("/api/info");
-  $("#hostname").textContent = state.info.system.hostname;
+  const system = state.info.system;
+  $("#hostname").textContent = system.hostname;
   $("#cpu-model").textContent =
-    `${state.info.system.cpu_model} · ${state.info.system.cpu_count} threads · ${bytes(state.info.system.mem_total)}`;
+    `${system.cpu_model} · ${system.cpu_count} threads · ${bytes(system.mem_total)}`;
   setParams(state.info.config.defaults);
-  $("#d-system").innerHTML = Object.entries(state.info.system)
-    .map(([k, v]) => {
-      const text = k === "gpus"
-        ? (v.length ? v.map((g) => `${g.vendor} ${g.name} (${g.driver})`).join(", ") : "none")
-        : (k === "mem_total" ? bytes(v) : v);
-      return `<span class="k">${k}</span><span class="v">${text}</span>`;
-    }).join("");
+  if (!$("#p-models-dir").value) $("#p-models-dir").value = state.info.download_dir;
+
+  $("#d-system").innerHTML = Object.entries(system).map(([k, v]) => {
+    const text = k === "gpus"
+      ? (v.length ? v.map((g) => `${g.vendor} ${g.name} (${g.driver})`).join(", ") : "none")
+      : (k === "mem_total" ? bytes(v) : v);
+    return `<span class="k">${k}</span><span class="v">${escapeHtml(text)}</span>`;
+  }).join("");
   const external = state.info.external_servers;
   $("#d-external").innerHTML = external.length
-    ? external.map((p) => `<span class="k">pid ${p.pid}</span><span class="v">${p.cmdline}</span>`).join("")
+    ? external.map((p) => `<span class="k">pid ${p.pid}</span><span class="v">${escapeHtml(p.cmdline)}</span>`).join("")
     : '<span class="k">none</span><span class="v">—</span>';
 
+  const downloads = await api("/api/hub/downloads");
+  $("#hub-dest").textContent = `downloads are saved to ${downloads.dest}`;
+  renderDownloads(downloads.downloads);
+
   await loadModels();
-  if (state.info.config.last_model &&
-      state.models.some((m) => m.path === state.info.config.last_model)) {
-    selectModel(state.info.config.last_model);
-  }
+  const last = state.info.config.last_model;
+  if (last && state.models.some((m) => m.path === last)) selectModel(last);
+  setMode("single");
   connect();
 }
 
 $("#btn-start").onclick = async () => {
-  if (!state.selected) return;
   const button = $("#btn-start");
+  const label = button.textContent;
   button.disabled = true;
   button.textContent = "Starting…";
   try {
     await api("/api/server/start", {
       method: "POST",
-      body: JSON.stringify({ model_path: state.selected, params: getParams() }),
+      body: JSON.stringify({
+        model_path: state.mode === "router" ? "" : state.selected,
+        params: getParams(),
+      }),
     });
     document.querySelector('.tab[data-tab="logs"]').click();
   } catch (err) {
     alert(`Failed to start: ${err.message}`);
   } finally {
-    button.disabled = false;
-    button.textContent = "Start model";
+    button.textContent = label;
+    updateStartButton();
   }
 };
 
-$("#btn-stop").onclick = () => api("/api/server/stop", { method: "POST" });
-$("#btn-restart").onclick = () => api("/api/server/restart", { method: "POST" });
+$("#btn-stop-all").onclick = async () => {
+  for (const server of state.servers.filter((s) => s.pid)) {
+    await api("/api/server/stop", { method: "POST", body: JSON.stringify({ id: server.id }) })
+      .catch((err) => alert(err.message));
+  }
+};
+
 $("#btn-rescan").onclick = loadModels;
 $("#model-filter").oninput = renderModels;
 $("#log-filter").oninput = renderLogs;
+$("#log-instance").onchange = renderLogs;
+$("#chat-instance").onchange = updateChatModels;
 $("#btn-clear-log").onclick = () => { state.logs = []; renderLogs(); };
 $("#chat-form").onsubmit = sendChat;
+$("#hub-form").onsubmit = hubSearch;
 $("#chat-input").onkeydown = (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chat-form").requestSubmit(); }
 };
-$$(".params input, .params select").forEach((el) => el.addEventListener("input", updatePreview));
+$$(".mode").forEach((button) => { button.onclick = () => setMode(button.dataset.mode); });
+$$(".params input, .params select").forEach((el) => {
+  el.addEventListener("input", () => { updatePreview(); updateStartButton(); });
+});
 $$(".tab").forEach((tab) => {
   tab.onclick = () => {
     $$(".tab").forEach((t) => t.classList.toggle("active", t === tab));

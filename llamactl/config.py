@@ -15,9 +15,16 @@ CONFIG_PATH = Path(os.environ.get("LLAMACTL_CONFIG", APP_DIR / "config.json"))
 class LaunchParams:
     """Flags handed to llama-server when a model is started."""
 
+    # "single" runs one model; "router" lets llama-server host a directory of
+    # models on one port and load them on demand
+    mode: str = "single"
     # 0.0.0.0 so the model API is reachable from other machines, not just localhost
     host: str = "0.0.0.0"
     port: int = 8090
+    # router-only
+    models_dir: str = ""
+    models_max: int = 2
+    models_autoload: bool = True
     n_gpu_layers: int = 99
     ctx_size: int = 4096
     threads: int = 0  # 0 = let llama.cpp decide
@@ -39,7 +46,14 @@ class LaunchParams:
 class Config:
     llama_server_bin: str = "~/llama.cpp/build/bin/llama-server"
     model_dirs: list[str] = field(
-        default_factory=lambda: ["~/models", "~/llama.cpp/models", "~"]
+        default_factory=lambda: [
+            "~/models",
+            "~/llama.cpp/models",
+            # downloads made by `llama-server -hf …` and by huggingface-cli
+            "~/.cache/llama.cpp",
+            "~/.cache/huggingface/hub",
+            "~",
+        ]
     )
     controller_host: str = "0.0.0.0"
     controller_port: int = 8080
@@ -62,6 +76,14 @@ class Config:
             if p not in seen:
                 seen.append(p)
         return seen
+
+    def download_dir(self) -> Path:
+        """Where Hub downloads land: the first configured directory, or ~/models."""
+        for raw in self.model_dirs:
+            path = Path(raw).expanduser()
+            if path.name not in ("hub", "llama.cpp") and path != Path.home():
+                return path
+        return Path.home() / "models"
 
     def params_for(self, model_path: str) -> LaunchParams:
         saved = self.presets.get(model_path)

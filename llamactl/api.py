@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -15,10 +14,12 @@ from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketD
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import hub
 from .config import Config, LaunchParams
+from .hub import Downloader
 from .metrics import Monitor
 from .models import ModelIndex
-from .supervisor import LlamaSupervisor, find_external_servers
+from .supervisor import ServerInstance, SupervisorPool, find_external_servers
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -26,23 +27,36 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 def create_app(cfg: Config) -> FastAPI:
     monitor = Monitor(history_size=cfg.history_size)
     index = ModelIndex()
-    supervisor = LlamaSupervisor(cfg)
-    state: dict[str, Any] = {"latest": None, "clients": set()}
+    pool = SupervisorPool(cfg)
+    downloader = Downloader(cfg.download_dir())
+    clients: set[WebSocket] = set()
+
+    def instance_or_404(instance_id: Any) -> ServerInstance:
+        try:
+            instance = pool.get(int(instance_id))
+        except (TypeError, ValueError):
+            instance = None
+        if instance is None:
+            raise HTTPException(404, f"no instance with id {instance_id}")
+        return instance
 
     async def sampler() -> None:
-        """Single 1 Hz sampling loop shared by every connected client."""
+        """One 1 Hz sampling loop shared by every connected client."""
         while True:
             try:
                 # off the event loop: some GPU backends shell out to a tool
-                sample = await asyncio.to_thread(monitor.sample, supervisor.pid)
-                sample["server"] = supervisor.status()
-                state["latest"] = sample
+                sample = await asyncio.to_thread(monitor.sample_many, pool.pids)
+                servers = pool.status()
+                for status in servers:
+                    status["process"] = sample["processes"].get(status["pid"]) if status["pid"] else None
+                sample["servers"] = servers
+                sample["downloads"] = downloader.public()
                 payload = json.dumps({"type": "metrics", "data": sample})
-                for ws in list(state["clients"]):
+                for ws in list(clients):
                     try:
                         await ws.send_text(payload)
                     except Exception:
-                        state["clients"].discard(ws)
+                        clients.discard(ws)
             except Exception as exc:  # keep the loop alive whatever happens
                 print(f"[sampler] {exc!r}")
             await asyncio.sleep(1.0)
@@ -56,7 +70,7 @@ def create_app(cfg: Config) -> FastAPI:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-            await supervisor.shutdown()
+            await pool.shutdown()
 
     app = FastAPI(title="llama-controller", docs_url="/api/docs", lifespan=lifespan)
 
@@ -68,8 +82,8 @@ def create_app(cfg: Config) -> FastAPI:
             "system": monitor.static_info(),
             "config": cfg.to_dict(),
             "server_bin_exists": cfg.server_bin.is_file(),
-            "external_servers": find_external_servers(exclude_pid=supervisor.pid),
-            "orphan_on_llama_port": supervisor.find_orphan() if not supervisor.pid else None,
+            "external_servers": find_external_servers(exclude_pids=pool.pids),
+            "download_dir": str(downloader.dest_dir),
         }
 
     @app.get("/api/config")
@@ -90,62 +104,141 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/models")
     async def list_models() -> dict[str, Any]:
-        found = await asyncio.to_thread(index.scan, cfg.resolved_model_dirs())
+        found, skipped = await asyncio.to_thread(index.scan, cfg.resolved_model_dirs())
         for entry in found:
             entry["params"] = asdict(cfg.params_for(entry["path"]))
-        return {"models": found, "dirs": [str(d) for d in cfg.resolved_model_dirs()]}
+        return {
+            "models": found,
+            "skipped": skipped,
+            "dirs": [str(d) for d in cfg.resolved_model_dirs()],
+        }
 
-    # ---------------------------------------------------------------- server
+    # ------------------------------------------------------- huggingface hub
+
+    @app.get("/api/hub/search")
+    async def hub_search(q: str, limit: int = 20) -> dict[str, Any]:
+        if not q.strip():
+            return {"results": []}
+        try:
+            return {"results": await hub.search(q.strip(), limit)}
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"hugging face unreachable: {exc}") from exc
+
+    @app.get("/api/hub/files")
+    async def hub_files(repo: str) -> dict[str, Any]:
+        try:
+            files = await hub.list_files(repo)
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(exc.response.status_code, f"repo not found: {repo}") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"hugging face unreachable: {exc}") from exc
+        return {"repo": repo, "files": files}
+
+    @app.post("/api/hub/download")
+    async def hub_download(payload: dict = Body(...)) -> dict[str, Any]:
+        repo, path = payload.get("repo"), payload.get("path")
+        if not repo or not path:
+            raise HTTPException(400, "repo and path are required")
+        try:
+            job = downloader.start(repo, path)
+        except (ValueError, FileExistsError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return job.public()
+
+    @app.get("/api/hub/downloads")
+    async def hub_downloads() -> dict[str, Any]:
+        return {"downloads": downloader.public(), "dest": str(downloader.dest_dir)}
+
+    @app.post("/api/hub/cancel")
+    async def hub_cancel(payload: dict = Body(...)) -> dict[str, Any]:
+        job_id = payload.get("id")
+        if not downloader.cancel(int(job_id)) and not downloader.forget(int(job_id)):
+            raise HTTPException(404, "no such download")
+        return {"ok": True}
+
+    # --------------------------------------------------------------- servers
 
     @app.get("/api/status")
     async def status() -> dict[str, Any]:
-        return supervisor.status()
+        return {"instances": pool.status()}
 
     @app.post("/api/server/start")
     async def start(payload: dict = Body(...)) -> dict[str, Any]:
-        model_path = payload.get("model_path")
-        if not model_path:
-            raise HTTPException(400, "model_path is required")
         params = LaunchParams.from_dict(payload.get("params") or {})
+        model_path = payload.get("model_path") or ""
+        if params.mode != "router" and not model_path:
+            raise HTTPException(400, "model_path is required")
         try:
-            result = await supervisor.start(model_path, params)
+            result = await pool.start(model_path, params)
         except (FileNotFoundError, OSError, RuntimeError) as exc:
             raise HTTPException(400, str(exc)) from exc
-        cfg.presets[model_path] = asdict(params)
-        cfg.last_model = model_path
+
+        if params.mode == "router":
+            cfg.defaults.models_dir = params.models_dir
+        else:
+            cfg.presets[model_path] = asdict(params)
+            cfg.last_model = model_path
         cfg.save()
         return result
 
     @app.post("/api/server/stop")
-    async def stop() -> dict[str, Any]:
-        return await supervisor.stop()
-
-    @app.post("/api/server/clear-port")
-    async def clear_port() -> dict[str, Any]:
-        """Kill a llama-server left on our port by a previous controller run."""
-        orphan = supervisor.find_orphan()
-        if orphan is None:
-            return {"cleared": False, "reason": "no orphaned llama-server on that port"}
-        host, port = supervisor.bind
-        try:
-            await supervisor.clear_port(host, port)
-        except RuntimeError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        return {"cleared": True, "pid": orphan["pid"]}
+    async def stop(payload: dict = Body(default={})) -> dict[str, Any]:
+        instance = instance_or_404(payload.get("id"))
+        await instance.stop()
+        return instance.status()
 
     @app.post("/api/server/restart")
-    async def restart() -> dict[str, Any]:
+    async def restart(payload: dict = Body(default={})) -> dict[str, Any]:
+        instance = instance_or_404(payload.get("id"))
+        return await pool.restart(instance.id)
+
+    @app.post("/api/server/remove")
+    async def remove(payload: dict = Body(default={})) -> dict[str, Any]:
+        instance = instance_or_404(payload.get("id"))
+        if instance.pid:
+            raise HTTPException(409, "instance is still running — stop it first")
+        await pool.remove(instance.id)
+        return {"ok": True}
+
+    @app.post("/api/server/clear-port")
+    async def clear_port(payload: dict = Body(default={})) -> dict[str, Any]:
+        port = int(payload.get("port") or cfg.defaults.port)
+        host = payload.get("host") or cfg.defaults.host
         try:
-            return await supervisor.restart()
+            cleared = await pool.clear_port(host, port)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"cleared": cleared, "port": port}
+
+    # ---------------------------------------------------------------- router
+
+    # declared before the {action} route below, which would otherwise swallow it
+    @app.post("/api/router/refresh")
+    async def router_refresh(payload: dict = Body(...)) -> dict[str, Any]:
+        instance = instance_or_404(payload.get("id"))
+        await instance.refresh_router_models()
+        return {"models": instance.router_models}
+
+    @app.post("/api/router/{action}")
+    async def router_action(action: str, payload: dict = Body(...)) -> dict[str, Any]:
+        if action not in ("load", "unload"):
+            raise HTTPException(404, "unknown router action")
+        instance = instance_or_404(payload.get("id"))
+        model_id = payload.get("model")
+        if not model_id:
+            raise HTTPException(400, "model is required")
+        try:
+            return await instance.router_action(action, model_id)
         except RuntimeError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"router unreachable: {exc}") from exc
 
     # ------------------------------------------------------------------ logs
 
     @app.get("/api/logs")
-    async def logs(limit: int = 500) -> dict[str, Any]:
-        entries = list(supervisor.logs)[-limit:]
-        return {"logs": entries, "total": len(supervisor.logs)}
+    async def logs(limit: int = 500, instance: int | None = None) -> dict[str, Any]:
+        return {"logs": pool.recent_logs(limit, instance)}
 
     @app.get("/api/metrics/history")
     async def history() -> dict[str, Any]:
@@ -156,15 +249,15 @@ def create_app(cfg: Config) -> FastAPI:
     @app.websocket("/ws")
     async def websocket(ws: WebSocket) -> None:
         await ws.accept()
-        state["clients"].add(ws)
-        queue = supervisor.subscribe()
+        clients.add(ws)
+        queue = pool.subscribe()
         try:
             await ws.send_text(json.dumps({
                 "type": "hello",
                 "data": {
                     "system": monitor.static_info(),
-                    "server": supervisor.status(),
-                    "logs": list(supervisor.logs)[-300:],
+                    "servers": pool.status(),
+                    "logs": pool.recent_logs(300),
                     "history": list(monitor.history)[-120:],
                 },
             }))
@@ -174,18 +267,26 @@ def create_app(cfg: Config) -> FastAPI:
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
-            state["clients"].discard(ws)
-            supervisor.unsubscribe(queue)
+            clients.discard(ws)
+            pool.unsubscribe(queue)
 
     # ------------------------------------------------------ chat passthrough
 
     @app.post("/api/chat")
     async def chat(payload: dict = Body(...)) -> Any:
-        """Forward a chat completion to the running llama-server, streaming back."""
-        if supervisor.state.value != "ready":
-            raise HTTPException(409, "llama-server is not ready")
+        """Forward a chat completion to one running server, streaming back."""
+        instance_id = payload.pop("instance", None)
+        instance = instance_or_404(instance_id) if instance_id is not None else None
+        if instance is None:
+            candidates = pool.ready()
+            if not candidates:
+                raise HTTPException(409, "no llama-server is ready")
+            instance = candidates[0]
+        if instance.state.value != "ready":
+            raise HTTPException(409, f"{instance.name} is not ready")
+
         body = {"stream": True, **payload}
-        url = f"{supervisor.base_url}/v1/chat/completions"
+        url = f"{instance.base_url}/v1/chat/completions"
 
         async def relay():
             timeout = httpx.Timeout(10.0, read=600.0)
@@ -199,23 +300,23 @@ def create_app(cfg: Config) -> FastAPI:
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
-    @app.api_route("/proxy/{path:path}", methods=["GET", "POST"])
-    async def proxy(path: str, request: Request) -> Any:
-        """Thin passthrough to llama-server's own endpoints (/slots, /metrics …)."""
-        url = f"{supervisor.base_url}/{path}"
+    @app.api_route("/proxy/{instance_id}/{path:path}", methods=["GET", "POST"])
+    async def proxy(instance_id: int, path: str, request: Request) -> Any:
+        """Thin passthrough to a server's own endpoints (/slots, /metrics …)."""
+        instance = instance_or_404(instance_id)
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.request(
                     request.method,
-                    url,
+                    f"{instance.base_url}/{path}",
                     content=await request.body(),
-                    headers={"content-type": request.headers.get("content-type", "application/json")},
+                    headers={"content-type": request.headers.get("content-type",
+                                                                 "application/json")},
                 )
             except httpx.HTTPError as exc:
                 raise HTTPException(502, f"llama-server unreachable: {exc}") from exc
-        media = response.headers.get("content-type", "text/plain")
         return StreamingResponse(iter([response.content]), status_code=response.status_code,
-                                 media_type=media)
+                                 media_type=response.headers.get("content-type", "text/plain"))
 
     # ------------------------------------------------------------------- web
 
