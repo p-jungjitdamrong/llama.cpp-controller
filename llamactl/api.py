@@ -17,7 +17,7 @@ from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketD
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import hub
+from . import __author__, __url__, __version__, hub
 from .config import Config, LaunchParams
 from .hub import Downloader
 from .metrics import Monitor
@@ -33,6 +33,15 @@ def create_app(cfg: Config) -> FastAPI:
     pool = SupervisorPool(cfg)
     downloader = Downloader(cfg.download_dir())
     clients: set[WebSocket] = set()
+
+    def instance_or_404(instance_id: Any) -> ServerInstance:
+        try:
+            instance = pool.get(int(instance_id))
+        except (TypeError, ValueError):
+            instance = None
+        if instance is None:
+            raise HTTPException(404, f"no instance with id {instance_id}")
+        return instance
 
     async def sampler() -> None:
         """One 1 Hz sampling loop shared by every connected client."""
@@ -81,6 +90,7 @@ def create_app(cfg: Config) -> FastAPI:
             "server_bin_exists": cfg.server_bin.is_file(),
             "external_servers": find_external_servers(exclude_pids=pool.pids),
             "download_dir": str(downloader.dest_dir),
+            "app": {"version": __version__, "author": __author__, "url": __url__},
         }
 
     @app.get("/api/config")

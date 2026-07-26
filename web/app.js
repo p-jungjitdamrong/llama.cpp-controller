@@ -885,6 +885,10 @@ async function sendChat(event) {
   log.querySelector(".empty")?.remove();
   log.insertAdjacentHTML("beforeend", `<div class="msg user"></div>`);
   log.lastElementChild.textContent = text;
+  // reasoning models stream their thinking in a separate field before any answer
+  log.insertAdjacentHTML("beforeend",
+    `<details class="think" open hidden><summary>thinking…</summary><pre></pre></details>`);
+  const think = log.lastElementChild;
   log.insertAdjacentHTML("beforeend", `<div class="msg assistant"></div>`);
   const bubble = log.lastElementChild;
   log.scrollTop = log.scrollHeight;
@@ -916,9 +920,21 @@ async function sendChat(event) {
         const payload = line.slice(6).trim();
         if (payload === "[DONE]") continue;
         try {
-          const chunk = JSON.parse(payload);
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (delta) { bubble.textContent += delta; chunks++; log.scrollTop = log.scrollHeight; }
+          const delta = JSON.parse(payload).choices?.[0]?.delta || {};
+          if (delta.reasoning_content) {
+            think.hidden = false;
+            think.querySelector("pre").textContent += delta.reasoning_content;
+            chunks++;
+          }
+          if (delta.content) {
+            // the answer has started, so fold the thinking away
+            think.open = false;
+            think.querySelector("summary").textContent =
+              `thought for ${((performance.now() - started) / 1000).toFixed(0)}s`;
+            bubble.textContent += delta.content;
+            chunks++;
+          }
+          log.scrollTop = log.scrollHeight;
         } catch { /* partial frame */ }
       }
     }
@@ -950,6 +966,9 @@ async function init() {
   await loadExternal();
 
   renderAutostart((await api("/api/autostart")).entries);
+
+  const app = state.info.app || {};
+  if (app.version) $("#app-version").textContent = `v${app.version} ·`;
 
   const downloads = await api("/api/hub/downloads");
   $("#hub-dest").textContent = `downloads are saved to ${downloads.dest}`;
