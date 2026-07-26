@@ -1,12 +1,25 @@
+<div align="center">
+
 # llama.cpp controller
 
-A web control panel for [llama.cpp](https://github.com/ggml-org/llama.cpp): pick a
-GGUF, start it with the flags you want, run several models side by side, download
-new ones from Hugging Face, and watch CPU, memory and **per-model GPU usage**
+**Run llama.cpp from a web page instead of a terminal.**
+
+Pick a GGUF, start it with the flags you want, run several models side by side,
+pull new ones from Hugging Face, and watch CPU, memory and per-model GPU usage
 while they work.
 
-Four Python dependencies, no build step, no database. The dashboard is plain
-HTML/CSS/JS served by the same process that supervises the models.
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![llama.cpp](https://img.shields.io/badge/llama.cpp-server-orange)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Dependencies](https://img.shields.io/badge/dependencies-4-brightgreen)
+![Build step](https://img.shields.io/badge/build%20step-none-lightgrey)
+
+</div>
+
+Four Python dependencies, no build step, no database, no JavaScript framework.
+The dashboard is plain HTML/CSS/JS served by the same process that supervises
+the models.
 
 ```mermaid
 graph LR
@@ -21,11 +34,30 @@ graph LR
 
 ## Why
 
-A laptop with 13 GB of RAM and an integrated GPU can serve several small models
-at once, but only if someone is watching the memory, the ports and the flags.
-Doing that by hand across terminal tabs is tedious and easy to get wrong — this
-turns it into a panel, and encodes the mistakes it caught along the way as
-guardrails.
+llama.cpp gives you an excellent server. What it does not give you is a
+comfortable way to *operate* it.
+
+Starting a model means recalling a long command line. Changing a flag means
+finding the process, killing it, and typing the line again. Running a second
+model means a second terminal, a second port to remember, and no easy way to see
+which one is eating the machine. Trying a model you do not have yet means leaving
+for a browser, finding the right quantisation, downloading it, and coming back.
+
+I wanted that to be a web page: choose a model, press start, see what is running
+and what it costs. Everything here follows from that — and the guardrails that
+grew along the way are the bugs it caught, written down so they cannot happen
+twice.
+
+## Highlights
+
+| | |
+| --- | --- |
+| **Many models, one panel** | A `llama-server` per model, ports allocated automatically, each with its own state, endpoint, throughput and controls |
+| **Router mode** | Or let one server host a whole directory and load on demand — with the flags actually passed through, which llama.cpp's own router does not do for you |
+| **Per-model GPU** | Not just the card total: VRAM, GTT and GPU share attributed to each model, from DRM fdinfo or `nvidia-smi` |
+| **Memory guard** | Starts are refused when weights plus KV cache will not fit, counting what is already promised — not what happens to be free |
+| **Hugging Face built in** | Search, browse quantisations by size, download with resumable progress, appear in the model list |
+| **Survives a reboot** | Save the running set, install the systemd unit, and the box comes back serving models with nobody logged in |
 
 ## What it does
 
@@ -224,6 +256,22 @@ line, and the session kills itself. `scripts/ctl.sh` uses a pid file.
   instances keep each one warm with its own flags and port, a router gives one
   endpoint and caps residency — but which to use is your call.
 
+## Author
+
+**Panuwat Jungjitdamrong** — [@p-jungjitdamrong](https://github.com/p-jungjitdamrong)
+
+Built on a ThinkPad X395 to make a small local-inference box pleasant to operate.
+Issues and pull requests are welcome.
+
+## Acknowledgements
+
+- [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) — the inference
+  engine and the `llama-server` this panel drives
+- [Hugging Face](https://huggingface.co) — the public Hub API used for search and
+  downloads
+- Models measured in this README: Liquid AI (LFM2.5), Alibaba (Qwen), IBM
+  (Granite), Google (Gemma)
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
