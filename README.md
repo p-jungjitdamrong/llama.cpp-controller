@@ -14,6 +14,7 @@ while they work.
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Dependencies](https://img.shields.io/badge/dependencies-4-brightgreen)
 ![Build step](https://img.shields.io/badge/build%20step-none-lightgrey)
+![Release](https://img.shields.io/github/v/tag/p-jungjitdamrong/llama.cpp-controller?label=release&color=success)
 
 <img src="docs/dashboard-live.jpg" alt="Dashboard with live CPU, memory and GPU graphs while two models run" width="100%">
 
@@ -285,6 +286,18 @@ line, and the session kills itself. `scripts/ctl.sh` uses a pid file.
 - **Nothing schedules for you.** Two ways to serve several models — separate
   instances keep each one warm with its own flags and port, a router gives one
   endpoint and caps residency — but which to use is your call.
+
+## Releases
+
+Versions follow [semantic versioning](https://semver.org) and every change is
+recorded in [CHANGELOG.md](CHANGELOG.md). To cut one:
+
+```bash
+./scripts/release.sh 0.4.0
+```
+
+It refuses to run on a dirty tree or a version with no changelog section, bumps
+`__version__`, tags, pushes, and publishes the notes to GitHub Releases.
 
 ## Author
 
