@@ -3,7 +3,7 @@
 # Usage: ./deploy.sh [user@host] [remote-dir]
 set -euo pipefail
 
-HOST="${1:-x395@192.168.71.1}"
+HOST="${1:-${LLAMACTL_HOST:?pass user@host, or set LLAMACTL_HOST}}"
 REMOTE_DIR="${2:-llama_controller}"
 VENV="${VENV:-\$HOME/llama_controller_venv}"
 
