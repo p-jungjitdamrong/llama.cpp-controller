@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import shutil
+import signal
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -108,13 +111,96 @@ def create_app(cfg: Config) -> FastAPI:
     @app.get("/api/models")
     async def list_models() -> dict[str, Any]:
         found, skipped = await asyncio.to_thread(index.scan, cfg.resolved_model_dirs())
+        running = {i.model_path: i.params.port for i in pool.instances.values() if i.pid}
+        autostarted = {e.get("model_path") for e in cfg.autostart}
         for entry in found:
             entry["params"] = asdict(cfg.params_for(entry["path"]))
+            entry["running_port"] = running.get(entry["path"])
+            entry["autostart"] = entry["path"] in autostarted
+
+        dirs = []
+        for directory in cfg.resolved_model_dirs():
+            info: dict[str, Any] = {"path": str(directory), "exists": directory.is_dir()}
+            if info["exists"]:
+                with contextlib.suppress(OSError):
+                    usage = shutil.disk_usage(directory)
+                    info["free"] = usage.free
+                    info["total"] = usage.total
+                info["size"] = sum(m["size"] for m in found
+                                   if m["dir"].startswith(str(directory)))
+            dirs.append(info)
+
         return {
             "models": found,
             "skipped": skipped,
             "dirs": [str(d) for d in cfg.resolved_model_dirs()],
+            "dir_info": dirs,
+            "download_dir": str(downloader.dest_dir),
         }
+
+    @app.post("/api/models/delete")
+    async def delete_model(payload: dict = Body(...)) -> dict[str, Any]:
+        """Delete a GGUF file. Only inside a configured directory, never in use."""
+        raw = payload.get("path") or ""
+        if not payload.get("confirm"):
+            raise HTTPException(400, "confirm must be true")
+        target = Path(raw).expanduser().resolve()
+        if target.suffix.lower() != ".gguf" or not target.is_file():
+            raise HTTPException(400, f"not a gguf file: {target}")
+        roots = [d.resolve() for d in cfg.resolved_model_dirs()]
+        if not any(target == root or root in target.parents for root in roots):
+            raise HTTPException(403, "file is outside the configured model directories")
+        for instance in pool.instances.values():
+            if instance.pid and Path(instance.model_path).resolve() == target:
+                raise HTTPException(409,
+                                    f"{target.name} is being served on port "
+                                    f"{instance.params.port} — stop it first")
+        size = target.stat().st_size
+        target.unlink()
+        pool.log(f"deleted model {target} ({size / 1024**3:.2f} GB)")
+        cfg.presets.pop(str(target), None)
+        cfg.autostart = [e for e in cfg.autostart
+                         if Path(e.get("model_path", "")).resolve() != target]
+        cfg.save()
+        return {"deleted": str(target), "freed": size}
+
+    # ------------------------------------------------------------- processes
+
+    @app.get("/api/processes")
+    async def processes() -> dict[str, Any]:
+        return {"external": find_external_servers(exclude_pids=pool.pids),
+                "ours": sorted(pool.pids)}
+
+    @app.post("/api/processes/kill")
+    async def kill_process(payload: dict = Body(...)) -> dict[str, Any]:
+        """Kill a llama-server this controller does not manage."""
+        try:
+            pid = int(payload.get("pid"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "pid is required") from None
+        if pid in pool.pids:
+            raise HTTPException(409, "that process is one of ours — use stop instead")
+        target = next((p for p in find_external_servers(exclude_pids=pool.pids)
+                       if p["pid"] == pid), None)
+        if target is None:
+            raise HTTPException(404, f"no external llama-server with pid {pid}")
+
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                break
+            except PermissionError as exc:
+                raise HTTPException(403, f"not allowed to signal pid {pid} "
+                                         f"(different user?)") from exc
+            for _ in range(20):
+                await asyncio.sleep(0.25)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    pool.log(f"killed external llama-server pid {pid}")
+                    return {"killed": pid, "signal": sig.name}
+        raise HTTPException(500, f"pid {pid} is still alive after SIGKILL")
 
     # ------------------------------------------------------- huggingface hub
 

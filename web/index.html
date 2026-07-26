@@ -72,23 +72,23 @@
         <label class="check router-only full"><input id="p-autoload" type="checkbox" checked>
           load on first request <span class="hint">--models-autoload</span></label>
 
-        <label class="single-only">GPU layers <span class="hint">-ngl</span>
+        <label>GPU layers <span class="hint">-ngl</span>
           <input id="p-ngl" class="input" type="number" min="0" max="999" value="99"></label>
-        <label class="single-only">Context <span class="hint">-c</span>
+        <label>Context <span class="hint">-c</span>
           <input id="p-ctx" class="input" type="number" min="256" step="256" value="4096"></label>
-        <label class="single-only">Threads <span class="hint">-t, 0=auto</span>
+        <label>Threads <span class="hint">-t, 0=auto</span>
           <input id="p-threads" class="input" type="number" min="0" max="128" value="0"></label>
-        <label class="single-only">Parallel slots <span class="hint">-np</span>
+        <label>Parallel slots <span class="hint">-np</span>
           <input id="p-parallel" class="input" type="number" min="1" max="16" value="1"></label>
-        <label class="single-only">Batch <span class="hint">-b, 0=default</span>
+        <label>Batch <span class="hint">-b, 0=default</span>
           <input id="p-batch" class="input" type="number" min="0" step="64" value="0"></label>
-        <label class="single-only">Flash attention <span class="hint">-fa</span>
+        <label>Flash attention <span class="hint">-fa</span>
           <select id="p-fa" class="input">
             <option value="auto">auto</option><option value="on">on</option><option value="off">off</option>
           </select></label>
-        <label class="check single-only"><input id="p-mlock" type="checkbox"> mlock</label>
-        <label class="check single-only"><input id="p-nommap" type="checkbox"> no-mmap</label>
-        <label class="check single-only"><input id="p-jinja" type="checkbox" checked> jinja</label>
+        <label class="check"><input id="p-mlock" type="checkbox"> mlock</label>
+        <label class="check"><input id="p-nommap" type="checkbox"> no-mmap</label>
+        <label class="check"><input id="p-jinja" type="checkbox" checked> jinja</label>
         <label class="full">Extra args
           <input id="p-extra" class="input" type="text" placeholder="--rope-scaling linear …"></label>
       </div>
@@ -139,6 +139,7 @@
       <button class="tab active" data-tab="logs">Logs</button>
       <button class="tab" data-tab="chat">Test chat</button>
       <button class="tab" data-tab="hub">Download</button>
+      <button class="tab" data-tab="manage">Manage</button>
       <button class="tab" data-tab="details">Details</button>
     </div>
 
@@ -178,10 +179,38 @@
       </div>
     </div>
 
+    <div class="tab-panel" id="tab-manage">
+      <div class="manage-head">
+        <div class="storage" id="storage-info"></div>
+        <button id="btn-manage-refresh" class="btn small ghost">Rescan</button>
+      </div>
+
+      <table class="mtable">
+        <thead>
+          <tr>
+            <th>Model</th><th>Quant</th><th>Arch</th><th class="num">Size</th>
+            <th class="num">Ctx</th><th>Status</th><th class="right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="manage-rows"><tr><td colspan="7" class="empty">loading…</td></tr></tbody>
+      </table>
+
+      <div class="panel-head" style="margin-top:16px">
+        <h2>Other llama-server processes</h2>
+        <span class="dim tiny">started outside this controller</span>
+      </div>
+      <div id="external-list"><p class="empty">none</p></div>
+
+      <div class="panel-head" style="margin-top:16px">
+        <h2>Skipped files</h2>
+        <span class="dim tiny">found but not usable as a model</span>
+      </div>
+      <div id="skipped-list" class="drawer"></div>
+    </div>
+
     <div class="tab-panel" id="tab-details">
       <div class="detail-grid">
         <div><h4>System</h4><div id="d-system" class="kv">—</div></div>
-        <div><h4>Other llama-server processes</h4><div id="d-external" class="kv">—</div></div>
       </div>
     </div>
   </section>

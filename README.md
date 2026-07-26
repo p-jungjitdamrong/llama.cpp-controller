@@ -30,7 +30,16 @@ browser ──HTTP/WS──> llamactl ─ llama-server :8091  (another model)
   `--models-dir` hosts a whole directory (plus anything in the Hugging Face
   cache) on a single port and loads models on demand, up to `--models-max` at a
   time. The dashboard lists what the router knows about, shows which models are
-  resident, and can load or unload them explicitly.
+  resident, and can load or unload them explicitly. The launch flags are written
+  to an INI preset the router applies to every child it spawns — without one
+  those children start with plain defaults and run on the CPU.
+- **Manage tab** — every discovered model in one table with quantisation,
+  architecture, size, training context, whether it is running or in the startup
+  set, and how much disk is left. Models can be started or deleted from here;
+  deletion refuses anything outside the configured directories or currently
+  being served. llama-server processes started outside the controller are listed
+  with a Kill button (a router's own children are excluded — unload the model
+  instead).
 - **Launch flags** (`--host`, `--port`, `-ngl`, `-c`, `-t`, `-np`, `-b`, `-fa`,
   `--mlock`, `--no-mmap`, `--jinja`, plus free-form extra args) are editable in
   the UI and saved per model, so the next start of that model reuses them. The
@@ -148,7 +157,10 @@ dashboard, `--llama-host` / `--llama-port` for the model server it spawns.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/info` | host details, config, foreign llama-server processes |
-| GET | `/api/models` | discovered GGUF files with metadata, plus what was skipped |
+| GET | `/api/models` | discovered GGUF files with metadata, disk usage, and what was skipped |
+| POST | `/api/models/delete` | `{path, confirm: true}` — only inside the model dirs, never a model in use |
+| GET | `/api/processes` | llama-server processes, ours and foreign |
+| POST | `/api/processes/kill` | `{pid}` — foreign llama-server processes only |
 | GET | `/api/status` | every instance: state, argv, endpoint, throughput |
 | POST | `/api/server/start` | `{model_path, params}`; `params.mode: "router"` starts a router |
 | POST | `/api/server/stop` · `restart` · `remove` | `{id}` |

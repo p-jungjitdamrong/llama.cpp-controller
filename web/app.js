@@ -455,6 +455,7 @@ async function loadModels() {
     $("#model-count").textContent = data.models.length || "";
     renderScanDetails(data);
     renderModels();
+    renderManage(data);
   } catch (err) {
     $("#model-list").innerHTML = `<p class="empty">scan failed: ${escapeHtml(err.message)}</p>`;
   }
@@ -473,6 +474,110 @@ function renderScanDetails(data) {
     ${skipped.length ? `<div class="drawer-title">skipped</div>${skipped.join("")}` : ""}`;
   $("#model-dirs").title = (data.skipped || [])
     .map((s) => `${s.name} — ${s.reason}`).join("\n");
+}
+
+/* ------------------------------------------------------------- management */
+
+function manageRow(model) {
+  const running = model.running_port;
+  const badges = [];
+  if (running) badges.push(`<span class="badge on">:${running}</span>`);
+  if (model.autostart) badges.push('<span class="badge">startup</span>');
+  const source = model.repo
+    ? `<span class="badge dim-badge" title="${escapeHtml(model.dir)}">${escapeHtml(model.repo)}</span>`
+    : `<span class="mpath dim tiny">${escapeHtml(model.dir)}</span>`;
+  return `<tr data-path="${escapeHtml(model.path)}">
+      <td><div class="mname">${escapeHtml(model.name)}</div>
+          <div>${source}</div></td>
+      <td>${escapeHtml(model.quant || model.quant_guess || "—")}</td>
+      <td>${escapeHtml(model.architecture || "—")}</td>
+      <td class="num">${bytes(model.size)}</td>
+      <td class="num">${model.n_ctx_train ? model.n_ctx_train.toLocaleString() : "—"}</td>
+      <td>${badges.join(" ") || '<span class="dim tiny">idle</span>'}</td>
+      <td class="right nowrap">
+        <button class="btn small" data-mstart="${escapeHtml(model.path)}" ${running ? "disabled" : ""}>Start</button>
+        <button class="btn small danger" data-mdelete="${escapeHtml(model.path)}"
+                data-name="${escapeHtml(model.name)}" data-size="${model.size}">Delete</button>
+      </td>
+    </tr>`;
+}
+
+function renderManage(data) {
+  const models = data.models;
+  const rows = $("#manage-rows");
+  rows.innerHTML = models.length
+    ? models.map(manageRow).join("")
+    : '<tr><td colspan="7" class="empty">no models found</td></tr>';
+
+  const totalSize = models.reduce((sum, m) => sum + m.size, 0);
+  const disks = (data.dir_info || []).filter((d) => d.exists && d.free);
+  const seen = new Set();
+  const diskText = disks.filter((d) => !seen.has(d.free) && seen.add(d.free))
+    .map((d) => `${bytes(d.free)} free`).join(" · ");
+  $("#storage-info").innerHTML =
+    `<strong>${models.length}</strong> models · <strong>${bytes(totalSize)}</strong> on disk` +
+    (diskText ? ` · ${diskText}` : "") +
+    `<div class="dim tiny">downloads go to ${escapeHtml(data.download_dir || "")}</div>`;
+
+  rows.querySelectorAll("button[data-mstart]").forEach((button) => {
+    button.onclick = () => { selectModel(button.dataset.mstart); $("#btn-start").click(); };
+  });
+  rows.querySelectorAll("button[data-mdelete]").forEach((button) => {
+    button.onclick = async () => {
+      const { name, size } = button.dataset;
+      if (!confirm(`Delete ${name} (${bytes(+size)})?\n\nThe file is removed from disk — this cannot be undone.`)) return;
+      button.disabled = true;
+      try {
+        await api("/api/models/delete", {
+          method: "POST",
+          body: JSON.stringify({ path: button.dataset.mdelete, confirm: true }),
+        });
+        await loadModels();
+      } catch (err) {
+        alert(err.message);
+        button.disabled = false;
+      }
+    };
+  });
+
+  const skipped = data.skipped || [];
+  $("#skipped-list").innerHTML = skipped.length
+    ? skipped.map((s) => `<div>${escapeHtml(s.name)} <span class="dim">— ${escapeHtml(s.reason)}</span></div>`).join("")
+    : '<div class="dim">nothing skipped</div>';
+}
+
+async function loadExternal() {
+  const data = await api("/api/processes");
+  const host = $("#external-list");
+  host.innerHTML = data.external.length
+    ? data.external.map((p) => `<div class="server">
+        <div class="server-head">
+          <span class="pill" data-state="starting">external</span>
+          <span class="server-name">pid ${p.pid}${p.port ? ` · port ${p.port}` : ""}</span>
+          <span class="server-actions">
+            <button class="btn small danger" data-kill="${p.pid}">Kill</button>
+          </span>
+        </div>
+        <div class="server-meta dim tiny">${escapeHtml(p.cmdline)}</div>
+      </div>`).join("")
+    : '<p class="empty">none — every llama-server on this box is managed here</p>';
+
+  host.querySelectorAll("button[data-kill]").forEach((button) => {
+    button.onclick = async () => {
+      const pid = button.dataset.kill;
+      if (!confirm(`Kill llama-server pid ${pid}?\n\nIt was not started by this controller.`)) return;
+      button.disabled = true;
+      button.textContent = "killing…";
+      try {
+        await api("/api/processes/kill", { method: "POST", body: JSON.stringify({ pid: +pid }) });
+        await loadExternal();
+      } catch (err) {
+        alert(err.message);
+        button.textContent = "Kill";
+        button.disabled = false;
+      }
+    };
+  });
 }
 
 /* ---------------------------------------------------------------- params */
@@ -522,7 +627,7 @@ function setMode(mode) {
   $$(".single-only").forEach((el) => el.classList.toggle("hidden", mode !== "single"));
   $$(".router-only").forEach((el) => el.classList.toggle("hidden", mode !== "router"));
   $("#mode-help").textContent = mode === "router"
-    ? "One llama-server hosts a whole directory and loads models on demand — llama.cpp's own router."
+    ? "One llama-server hosts a whole directory and loads models on demand. The flags below are written to a preset the router applies to every model it loads."
     : "Starts one llama-server per model — run as many as memory allows.";
   updateStartButton();
   updatePreview();
@@ -549,6 +654,9 @@ function updatePreview() {
     argv = [bin, "--host", p.host, "--port", p.port, "--metrics",
       "--models-dir", p.models_dir, "--models-max", p.models_max,
       p.models_autoload ? "--models-autoload" : "--no-models-autoload"];
+    if (!p.extra_args.includes("--models-preset")) {
+      argv.push("--models-preset", `router-preset-${p.port}.ini`);
+    }
   } else {
     if (!state.selected) { $("#cmd-preview").textContent = ""; return; }
     argv = [bin, "--host", p.host, "--port", p.port, "--metrics",
@@ -827,10 +935,7 @@ async function init() {
       : (k === "mem_total" ? bytes(v) : v);
     return `<span class="k">${k}</span><span class="v">${escapeHtml(text)}</span>`;
   }).join("");
-  const external = state.info.external_servers;
-  $("#d-external").innerHTML = external.length
-    ? external.map((p) => `<span class="k">pid ${p.pid}</span><span class="v">${escapeHtml(p.cmdline)}</span>`).join("")
-    : '<span class="k">none</span><span class="v">—</span>';
+  await loadExternal();
 
   renderAutostart((await api("/api/autostart")).entries);
 
@@ -923,10 +1028,13 @@ $$(".mode").forEach((button) => { button.onclick = () => setMode(button.dataset.
 $$(".params input, .params select").forEach((el) => {
   el.addEventListener("input", () => { updatePreview(); updateStartButton(); });
 });
+$("#btn-manage-refresh").onclick = () => { loadModels(); loadExternal(); };
 $$(".tab").forEach((tab) => {
   tab.onclick = () => {
     $$(".tab").forEach((t) => t.classList.toggle("active", t === tab));
     $$(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `tab-${tab.dataset.tab}`));
+    // process list is cheap and goes stale quickly — refresh when it is opened
+    if (tab.dataset.tab === "manage") loadExternal();
   };
 });
 window.addEventListener("resize", () => {
