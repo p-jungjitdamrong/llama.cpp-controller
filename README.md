@@ -107,6 +107,12 @@ controller brings the same set back next time it starts, one at a time, waiting
 for each to load. With the systemd unit, the box comes back from a reboot
 serving models with nobody logged in.
 
+**Explains itself.** Every launch flag carries a plain-language note under the
+field — what it does, and the part that surprises people. `-np` divides the
+context rather than multiplying it; `-ngl 99` is worth testing against `0` on an
+integrated GPU, where a very small model can generate faster on the CPU. The `?`
+button in the Launch panel hides the notes once you know them.
+
 **Live logs and a test chat.** Every server's output streamed over one websocket,
 tagged with the model it came from, filterable by server and text. Tokens/second
 are parsed from the timing lines. A minimal streaming chat box confirms a model

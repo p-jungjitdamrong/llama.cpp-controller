@@ -592,6 +592,54 @@ async function loadExternal() {
   });
 }
 
+/* ------------------------------------------------------------ field help */
+
+/* Written for someone meeting llama.cpp's flags for the first time: what the
+   setting does, and the one thing that surprises people about it. */
+const FIELD_HELP = {
+  "p-host": "Who can reach this model. 0.0.0.0 lets other machines on your network connect; 127.0.0.1 keeps it on this machine only.",
+  "p-port": "The port this model listens on. If it is already taken, the next free one is used automatically.",
+  "p-ngl": "How many of the model's layers run on the GPU — 99 means all of them. Large models are much faster this way; very small ones can actually be faster on the CPU, so it is worth trying both.",
+  "p-ctx": "How much conversation the model can hold, counted in tokens for the prompt and the reply together. It costs memory: doubling the context doubles the KV cache. 0 means the model's trained maximum, which can be enormous.",
+  "p-threads": "CPU threads used while generating. 0 lets llama.cpp decide. Without GPU offload, matching your physical core count usually beats using every hyperthread.",
+  "p-parallel": "How many conversations can be served at once. It divides the context rather than multiplying it: 4096 context across 4 slots leaves each slot 1024 tokens.",
+  "p-batch": "How many prompt tokens are read at a time. This affects how fast the model reads your input, not how fast it answers. 0 uses the default.",
+  "p-fa": "A faster attention implementation that also saves memory on long contexts. Leave it on auto and llama.cpp will use it where the backend supports it.",
+  "p-mlock": "Pin the weights in RAM so the system can never swap them out. Only worth it on a machine that has swap and stutters without it.",
+  "p-nommap": "Read the whole file into RAM instead of memory-mapping it. Slower to start, but no page-fault pauses later.",
+  "p-jinja": "Format messages with the chat template stored inside the model file. Keep this on — chat formatting and tool calling both depend on it.",
+  "p-extra": "Any other llama-server flag, passed through as typed. Example: --embedding --pooling mean",
+  "p-models-dir": "The folder the router serves. It also picks up models already in the Hugging Face cache.",
+  "p-models-max": "How many models stay loaded at the same time. Past this limit the least recently used one is unloaded to make room.",
+  "p-autoload": "Load a model the first time a request asks for it. With this off, a request for an unloaded model is refused until you press Load.",
+};
+
+function applyFieldHelp(show) {
+  for (const [id, text] of Object.entries(FIELD_HELP)) {
+    const field = $(`#${id}`);
+    const label = field && field.closest("label");
+    if (!label) continue;
+    label.title = text;  // available on hover whether or not the text is shown
+    const existing = label.querySelector(".fieldhelp");
+    if (show && !existing) {
+      label.insertAdjacentHTML("beforeend", '<span class="fieldhelp"></span>');
+      label.querySelector(".fieldhelp").textContent = text;
+    } else if (!show && existing) {
+      existing.remove();
+    }
+  }
+  $("#btn-help").classList.toggle("on", show);
+}
+
+function toggleFieldHelp() {
+  // read the current state from the button, not from storage: on a first visit
+  // nothing is stored yet while the help is already showing, and the first
+  // click would then appear to do nothing
+  const show = !$("#btn-help").classList.contains("on");
+  localStorage.setItem("llamactl.help", show ? "on" : "off");
+  applyFieldHelp(show);
+}
+
 /* ---------------------------------------------------------------- params */
 
 function getParams() {
@@ -982,6 +1030,7 @@ async function init() {
   const last = state.info.config.last_model;
   if (last && state.models.some((m) => m.path === last)) selectModel(last);
   setMode("single");
+  applyFieldHelp(localStorage.getItem("llamactl.help") !== "off");
   connect();
 }
 
@@ -1074,6 +1123,7 @@ $$(".mode").forEach((button) => { button.onclick = () => setMode(button.dataset.
 $$(".params input, .params select").forEach((el) => {
   el.addEventListener("input", () => { updatePreview(); updateStartButton(); });
 });
+$("#btn-help").onclick = toggleFieldHelp;
 $("#btn-manage-refresh").onclick = () => { loadModels(); loadExternal(); };
 $$(".tab").forEach((tab) => {
   tab.onclick = () => {

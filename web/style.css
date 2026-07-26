@@ -123,7 +123,12 @@ select.input { cursor: pointer; }
 .params { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .params label { font-size: 12px; color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
 .params label.full { grid-column: 1 / -1; }
-.params label.check { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }
+.params label.check { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 13px; flex-wrap: wrap; }
+.fieldhelp {
+  font-size: 11px; line-height: 1.5; color: var(--dim);
+  margin-top: 3px; flex-basis: 100%;
+}
+.params label.check .fieldhelp { margin-top: 1px; }
 .hint { font-family: var(--mono); font-size: 10px; opacity: .7; }
 .cmd {
   font-family: var(--mono); font-size: 11px; color: var(--dim);
