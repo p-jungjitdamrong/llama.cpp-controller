@@ -8,6 +8,9 @@ Source:  https://github.com/p-jungjitdamrong/llama.cpp-controller
 License: MIT
 """
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 __version__ = "0.2.0"
 __author__ = "Panuwat Jungjitdamrong"
 __license__ = "MIT"

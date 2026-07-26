@@ -1,5 +1,8 @@
 """HTTP + websocket API and static hosting for the dashboard."""
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import asyncio

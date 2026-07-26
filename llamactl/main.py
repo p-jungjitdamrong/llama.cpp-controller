@@ -1,5 +1,8 @@
 """Entry point: python -m llamactl [--host …] [--port …]"""
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import argparse

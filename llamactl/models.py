@@ -1,5 +1,8 @@
 """Discovery of local GGUF models with cached header metadata."""
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import os

@@ -5,6 +5,9 @@ Downloads stream to `<name>.gguf.part` and are renamed on completion, so an
 interrupted transfer can resume with a Range request instead of starting over.
 """
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import asyncio

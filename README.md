@@ -11,9 +11,11 @@ while they work.
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![llama.cpp](https://img.shields.io/badge/llama.cpp-server-orange)
-![License](https://img.shields.io/badge/license-MIT-blue)
+![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Dependencies](https://img.shields.io/badge/dependencies-4-brightgreen)
 ![Build step](https://img.shields.io/badge/build%20step-none-lightgrey)
+
+<img src="docs/dashboard-manage.png" alt="Two models running, with every discovered GGUF listed in the Manage tab" width="100%">
 
 </div>
 
@@ -99,6 +101,14 @@ serving models with nobody logged in.
 tagged with the model it came from, filterable by server and text. Tokens/second
 are parsed from the timing lines. A minimal streaming chat box confirms a model
 actually answers.
+
+<div align="center">
+
+<img src="docs/test-chat.png" alt="Test chat with a reasoning model, thinking folded away once the answer starts" width="100%">
+
+<sub>Left: router launch parameters. Right: a reasoning model answering in Thai, with its thinking collapsed behind “thought for 18s”.</sub>
+
+</div>
 
 ## Hardware support
 
@@ -274,4 +284,8 @@ Issues and pull requests are welcome.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Apache 2.0 rather than MIT for the explicit patent grant, which is what most
+company legal reviews look for. llama.cpp itself is MIT and is not redistributed
+here — this project starts it as a separate process and talks to it over HTTP.

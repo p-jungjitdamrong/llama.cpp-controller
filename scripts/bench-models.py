@@ -14,6 +14,9 @@ things an agent loop actually depends on:
 Usage: python3 scripts/bench-agent-models.py [--controller URL] [--ctx 4096]
 """
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import argparse

@@ -9,6 +9,9 @@ own route table and calls each one, and treats any 500 as a failure — 404 and
 Usage: python3 scripts/smoke-test.py [http://127.0.0.1:8080]
 """
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import json

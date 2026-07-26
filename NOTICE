@@ -1,0 +1,18 @@
+llama.cpp controller
+Copyright 2026 Panuwat Jungjitdamrong
+
+This product includes software developed by Panuwat Jungjitdamrong
+(https://github.com/p-jungjitdamrong/llama.cpp-controller).
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. You may obtain a copy of the
+License at http://www.apache.org/licenses/LICENSE-2.0
+
+This project supervises and communicates with llama-server from llama.cpp
+(https://github.com/ggml-org/llama.cpp), which is distributed separately under
+the MIT License, Copyright (c) 2023-2026 The ggml authors. No llama.cpp source
+is included or redistributed here.
+
+Runtime dependencies are installed separately from PyPI and are not bundled with
+this distribution: FastAPI and Pydantic (MIT), Starlette, Uvicorn, websockets and
+httpx (BSD-3-Clause).

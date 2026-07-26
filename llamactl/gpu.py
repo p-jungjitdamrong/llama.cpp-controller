@@ -10,6 +10,9 @@ not care what hardware is underneath:
 Backends are probed once at startup; unavailable ones simply never appear.
 """
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import re

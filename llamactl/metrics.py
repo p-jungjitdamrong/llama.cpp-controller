@@ -6,6 +6,9 @@ happens to be installed, and reports what it can. GPU readings are delegated to
 the vendor backends in `gpu.py`.
 """
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import os

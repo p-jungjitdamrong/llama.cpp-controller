@@ -6,6 +6,9 @@ any dependency. Large arrays such as the tokenizer vocabulary are skipped
 rather than materialised.
 """
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Panuwat Jungjitdamrong
+
 from __future__ import annotations
 
 import struct
