@@ -294,6 +294,26 @@ select.input { cursor: pointer; }
 .badge.on { color: var(--accent-2); border-color: #2ea04366; background: #2ea04322; }
 .badge.dim-badge { max-width: 180px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 
+/* -------------------------------------------------------------- settings */
+.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; align-items: start; }
+.sbox {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px;
+}
+.sbox h4 { margin-bottom: 8px; }
+.sbox p { margin: 0 0 8px; }
+.sbox label { display: flex; flex-direction: column; gap: 4px; font-size: 12px;
+              color: var(--dim); margin-bottom: 10px; }
+.sbox label.check { flex-direction: row; align-items: center; gap: 7px;
+                    color: var(--text); font-size: 13px; margin-bottom: 6px; }
+.sbox textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
+.sbox code { font-family: var(--mono); font-size: 11px; background: var(--bg);
+             padding: 1px 4px; border-radius: 3px; }
+.sgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.token-row { display: flex; gap: 6px; margin: 8px 0; }
+.token-row .input { font-family: var(--mono); font-size: 11px; }
+.settings-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; }
+
 /* --------------------------------------------------------------- details */
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
 .detail-grid > div { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }

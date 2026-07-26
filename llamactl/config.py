@@ -70,6 +70,21 @@ class Config:
     autostart: list[dict] = field(default_factory=list)
     # last model started, restored into the UI on reload
     last_model: str = ""
+    # access control. The token is kept here in plain text on purpose: anyone who
+    # can read this file can already start processes as this user, and it is the
+    # way back in if the browser copy is lost.
+    auth_enabled: bool = False
+    auth_token: str = ""
+    # requests from the machine itself skip the check — turn this off when the
+    # controller sits behind a reverse proxy, where every request looks local
+    auth_allow_localhost: bool = True
+
+    def public_dict(self) -> dict:
+        """Config as the dashboard may see it — never the token itself."""
+        data = self.to_dict()
+        data["auth_token"] = ""
+        data["has_token"] = bool(self.auth_token)
+        return data
 
     @property
     def server_bin(self) -> Path:

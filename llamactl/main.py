@@ -28,6 +28,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--models-dir", action="append", default=None,
                         help="directory to scan for .gguf (repeatable)")
     parser.add_argument("--log-level", default="info")
+    parser.add_argument("--no-auth", action="store_true",
+                        help="ignore the saved token for this run — the way back "
+                             "in if you lock yourself out")
     args = parser.parse_args(argv)
 
     cfg.controller_host, cfg.controller_port = args.host, args.port
@@ -36,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.models_dir:
         cfg.model_dirs = args.models_dir
     cfg.save()
+    if args.no_auth:
+        cfg.auth_enabled = False   # in memory only; the saved token is untouched
+        print("auth disabled for this run (--no-auth)")
 
     if not cfg.server_bin.is_file():
         print(f"warning: llama-server not found at {cfg.server_bin}", file=sys.stderr)

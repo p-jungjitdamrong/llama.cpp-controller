@@ -141,6 +141,7 @@
       <button class="tab" data-tab="chat">Test chat</button>
       <button class="tab" data-tab="hub">Download</button>
       <button class="tab" data-tab="manage">Manage</button>
+      <button class="tab" data-tab="settings">Settings</button>
       <button class="tab" data-tab="details">Details</button>
     </div>
 
@@ -207,6 +208,65 @@
         <span class="dim tiny">found but not usable as a model</span>
       </div>
       <div id="skipped-list" class="drawer"></div>
+    </div>
+
+    <div class="tab-panel" id="tab-settings">
+      <div class="settings">
+
+        <section class="sbox">
+          <h4>Access</h4>
+          <p class="dim tiny">Off by default. With it on, the dashboard and the API
+             need a token — the same token works as <code>Authorization: Bearer …</code>
+             for any OpenAI-compatible client.</p>
+          <label class="check"><input id="s-auth" type="checkbox"> require a token</label>
+          <label class="check"><input id="s-auth-local" type="checkbox" checked>
+            skip the check for requests from this machine</label>
+          <p class="dim tiny">Turn that off if the controller sits behind a reverse
+             proxy, where every request appears to come from this machine.</p>
+          <div id="s-token-row" class="token-row" hidden>
+            <input id="s-token" class="input" readonly>
+            <button id="s-token-copy" class="btn small">Copy</button>
+            <button id="s-token-rotate" class="btn small ghost">New token</button>
+          </div>
+          <p class="dim tiny" id="s-auth-note">
+            Locked out? The token is in <code>config.json</code>, and
+            <code>python -m llamactl --no-auth</code> starts without it.</p>
+        </section>
+
+        <section class="sbox">
+          <h4>Paths</h4>
+          <label>llama-server binary
+            <input id="s-bin" class="input" type="text"></label>
+          <label>Model directories <span class="hint">one per line</span>
+            <textarea id="s-dirs" class="input" rows="5"></textarea></label>
+          <p class="dim tiny" id="s-download-note"></p>
+        </section>
+
+        <section class="sbox">
+          <h4>Defaults for new models</h4>
+          <p class="dim tiny">Used when a model has no saved settings of its own.</p>
+          <div class="sgrid">
+            <label>GPU layers <input id="s-ngl" class="input" type="number" min="0" max="999"></label>
+            <label>Context <input id="s-ctx" class="input" type="number" min="256" step="256"></label>
+            <label>Bind host <input id="s-host" class="input" type="text"></label>
+            <label>First port <input id="s-port" class="input" type="number" min="1" max="65535"></label>
+          </div>
+        </section>
+
+        <section class="sbox">
+          <h4>Retention</h4>
+          <div class="sgrid">
+            <label>Metric samples kept <input id="s-history" class="input" type="number" min="60" max="5000"></label>
+            <label>Log lines per server <input id="s-logbuf" class="input" type="number" min="100" max="100000"></label>
+          </div>
+          <p class="dim tiny">One sample a second, so 300 is five minutes of graph.</p>
+        </section>
+
+        <div class="settings-actions">
+          <button id="s-save" class="btn primary">Save settings</button>
+          <span class="dim tiny" id="s-status"></span>
+        </div>
+      </div>
     </div>
 
     <div class="tab-panel" id="tab-details">

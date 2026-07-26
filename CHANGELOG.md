@@ -9,6 +9,19 @@ an existing `config.json` is called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- Optional access control: a token checked on the API, the websocket and the
+  proxy routes, usable as `Authorization: Bearer …` by any OpenAI-compatible
+  client. Requests from the machine itself are exempt unless you say otherwise,
+  the token is readable in `config.json`, and `--no-auth` starts without it —
+  three ways back in if a token is lost.
+- A Settings tab for the binary path, model directories, defaults for new models
+  and retention, with the paths validated before they are saved.
+- Router presets now carry a section per model, built from the settings each
+  model was last started with, so a model tuned in "One model" mode keeps that
+  tuning when a router loads it. Only the values that differ from the shared
+  `[*]` section are written.
+
 ## [0.3.0] — 2026-07-27
 
 ### Added

@@ -10,6 +10,7 @@ const state = {
   info: null,
   logs: [],
   mode: "single",       // single | router
+  settings: { config: {}, auth: {} },
   expandedRouters: new Set(),
   serverSignature: null,
   series: { cpu: [], mem: [], proc: [] },
@@ -43,11 +44,25 @@ function escapeHtml(text) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
+function authToken() { return localStorage.getItem("llamactl.token") || ""; }
+
 async function api(path, options = {}) {
+  const token = authToken();
   const response = await fetch(path, {
-    headers: { "content-type": "application/json" },
     ...options,
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
   });
+  if (response.status === 401) {
+    const entered = prompt("This controller needs a token.\n\nIt is in config.json on the host, or run the controller with --no-auth to get back in.");
+    if (entered) {
+      localStorage.setItem("llamactl.token", entered.trim());
+      return api(path, options);   // one retry with the new token
+    }
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(data.detail || data.error || response.statusText);
@@ -592,6 +607,87 @@ async function loadExternal() {
   });
 }
 
+/* -------------------------------------------------------------- settings */
+
+async function loadSettings() {
+  const [config, auth] = await Promise.all([api("/api/config"), api("/api/auth")]);
+  state.settings = { config, auth };
+
+  $("#s-auth").checked = auth.enabled;
+  $("#s-auth-local").checked = auth.allow_localhost;
+  $("#s-token-row").hidden = !auth.enabled;
+  $("#s-token").value = auth.has_token ? (authToken() || "stored on the host") : "";
+
+  $("#s-bin").value = config.llama_server_bin;
+  $("#s-dirs").value = (config.model_dirs || []).join("\n");
+  $("#s-download-note").textContent = `Downloads are saved to the first directory that is not a cache: ${state.info?.download_dir || "—"}`;
+
+  const d = config.defaults || {};
+  $("#s-ngl").value = d.n_gpu_layers;
+  $("#s-ctx").value = d.ctx_size;
+  $("#s-host").value = d.host;
+  $("#s-port").value = d.port;
+  $("#s-history").value = config.history_size;
+  $("#s-logbuf").value = config.log_buffer_lines;
+}
+
+async function saveSettings() {
+  const status = $("#s-status");
+  status.textContent = "saving…";
+  try {
+    const config = await api("/api/config", {
+      method: "POST",
+      body: JSON.stringify({
+        llama_server_bin: $("#s-bin").value.trim(),
+        model_dirs: $("#s-dirs").value.split("\n").map((s) => s.trim()).filter(Boolean),
+        history_size: +$("#s-history").value,
+        log_buffer_lines: +$("#s-logbuf").value,
+        defaults: {
+          ...(state.settings.config.defaults || {}),
+          n_gpu_layers: +$("#s-ngl").value,
+          ctx_size: +$("#s-ctx").value,
+          host: $("#s-host").value.trim(),
+          port: +$("#s-port").value,
+        },
+      }),
+    });
+    state.settings.config = config;
+    state.info.config = config;
+    status.textContent = "saved";
+    setTimeout(() => { status.textContent = ""; }, 2500);
+    loadModels();   // directories may have changed
+  } catch (err) {
+    status.textContent = err.message;
+  }
+}
+
+async function saveAuth(extra = {}) {
+  const enabled = $("#s-auth").checked;
+  try {
+    const result = await api("/api/auth", {
+      method: "POST",
+      body: JSON.stringify({
+        enabled,
+        allow_localhost: $("#s-auth-local").checked,
+        ...extra,
+      }),
+    });
+    $("#s-token-row").hidden = !result.enabled;
+    if (result.token) {
+      // the only time the server hands it over — keep it so this browser stays in
+      localStorage.setItem("llamactl.token", result.token);
+      $("#s-token").value = result.token;
+      alert(`Token created:\n\n${result.token}\n\nThis browser is set up already. Copy it for any other client — it is also in config.json on the host.`);
+    } else if (!result.enabled) {
+      $("#s-status").textContent = "access control off";
+      setTimeout(() => { $("#s-status").textContent = ""; }, 2500);
+    }
+  } catch (err) {
+    alert(err.message);
+    loadSettings();
+  }
+}
+
 /* ------------------------------------------------------------ field help */
 
 /* Written for someone meeting llama.cpp's flags for the first time: what the
@@ -770,7 +866,10 @@ function renderLogs() {
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  // a browser cannot set headers on a websocket, so the token goes in the query
+  const token = authToken();
+  const ws = new WebSocket(
+    `${proto}://${location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`);
 
   ws.onopen = () => $("#ws-dot").classList.add("on");
   ws.onclose = () => {
@@ -1124,6 +1223,15 @@ $$(".params input, .params select").forEach((el) => {
   el.addEventListener("input", () => { updatePreview(); updateStartButton(); });
 });
 $("#btn-help").onclick = toggleFieldHelp;
+$("#s-save").onclick = saveSettings;
+$("#s-auth").onchange = () => saveAuth();
+$("#s-auth-local").onchange = () => saveAuth();
+$("#s-token-rotate").onclick = () => saveAuth({ rotate: true });
+$("#s-token-copy").onclick = () => {
+  navigator.clipboard.writeText($("#s-token").value)
+    .then(() => { $("#s-status").textContent = "token copied"; })
+    .catch(() => alert($("#s-token").value));
+};
 $("#btn-manage-refresh").onclick = () => { loadModels(); loadExternal(); };
 $$(".tab").forEach((tab) => {
   tab.onclick = () => {
@@ -1131,6 +1239,7 @@ $$(".tab").forEach((tab) => {
     $$(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `tab-${tab.dataset.tab}`));
     // process list is cheap and goes stale quickly — refresh when it is opened
     if (tab.dataset.tab === "manage") loadExternal();
+    if (tab.dataset.tab === "settings") loadSettings();
   };
 });
 window.addEventListener("resize", () => {

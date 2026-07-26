@@ -58,7 +58,7 @@ twice.
 | | |
 | --- | --- |
 | **Many models, one panel** | A `llama-server` per model, ports allocated automatically, each with its own state, endpoint, throughput and controls |
-| **Router mode** | Or let one server host a whole directory and load on demand — with the flags actually passed through, which llama.cpp's own router does not do for you |
+| **Router mode** | Or let one server host a whole directory and load on demand — with the flags actually passed through, which llama.cpp's own router does not do for you, per model as well as shared |
 | **Per-model GPU** | Not just the card total: VRAM, GTT and GPU share attributed to each model, from DRM fdinfo or `nvidia-smi` |
 | **Memory guard** | Starts are refused when weights plus KV cache will not fit, counting what is already promised — not what happens to be free |
 | **Hugging Face built in** | Search, browse quantisations by size, download with resumable progress, appear in the model list |
@@ -107,6 +107,16 @@ transfers resume with a Range request. No token, no `huggingface_hub` dependency
 controller brings the same set back next time it starts, one at a time, waiting
 for each to load. With the systemd unit, the box comes back from a reboot
 serving models with nobody logged in.
+
+**Access control when you want it.** Off by default; one switch in Settings mints
+a token that the dashboard, the API and any OpenAI-compatible client can use as
+`Authorization: Bearer …`. Requests from the machine itself can be exempted (turn
+that off behind a reverse proxy). If the token is ever lost it is still in
+`config.json`, and `python -m llamactl --no-auth` starts without it.
+
+**Settings in the panel.** Binary path, model directories, defaults for new
+models and retention are editable in a Settings tab instead of by hand in
+`config.json`.
 
 **Explains itself.** Every launch flag carries a plain-language note under the
 field — what it does, and the part that surprises people. `-np` divides the

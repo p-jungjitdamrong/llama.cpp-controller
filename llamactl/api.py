@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import json
 import os
+import secrets
 import shutil
 import signal
 from dataclasses import asdict
@@ -83,13 +84,60 @@ def create_app(cfg: Config) -> FastAPI:
 
     app = FastAPI(title="llama-controller", docs_url="/api/docs", lifespan=lifespan)
 
+    # ------------------------------------------------------------------ auth
+
+    # The page itself stays open so the browser can load it and ask for a token;
+    # everything that reads state or changes it is behind the check.
+    PUBLIC_PREFIXES = ("/static", "/favicon")
+
+    def token_of(request: Request) -> str:
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("bearer "):
+            return header[7:].strip()
+        return request.headers.get("x-api-key", "") or request.query_params.get("token", "")
+
+    def allowed(token: str, host: str) -> bool:
+        if not cfg.auth_enabled or not cfg.auth_token:
+            return True
+        if cfg.auth_allow_localhost and host in ("127.0.0.1", "::1", "localhost"):
+            return True
+        return secrets.compare_digest(token or "", cfg.auth_token)
+
+    @app.middleware("http")
+    async def check_token(request: Request, call_next):
+        path = request.url.path
+        host = request.client.host if request.client else ""
+        if path == "/" or path.startswith(PUBLIC_PREFIXES) or allowed(token_of(request), host):
+            return await call_next(request)
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+
+    @app.get("/api/auth")
+    async def auth_status() -> dict[str, Any]:
+        return {"enabled": cfg.auth_enabled, "has_token": bool(cfg.auth_token),
+                "allow_localhost": cfg.auth_allow_localhost}
+
+    @app.post("/api/auth")
+    async def auth_configure(payload: dict = Body(...)) -> dict[str, Any]:
+        """Turn access control on or off. The token is returned only when minted."""
+        token = None
+        if "allow_localhost" in payload:
+            cfg.auth_allow_localhost = bool(payload["allow_localhost"])
+        if payload.get("enabled") is not None:
+            cfg.auth_enabled = bool(payload["enabled"])
+        if cfg.auth_enabled and (not cfg.auth_token or payload.get("rotate")):
+            token = secrets.token_urlsafe(32)
+            cfg.auth_token = token
+        cfg.save()
+        return {"enabled": cfg.auth_enabled, "allow_localhost": cfg.auth_allow_localhost,
+                "has_token": bool(cfg.auth_token), "token": token}
+
     # ------------------------------------------------------------------ meta
 
     @app.get("/api/info")
     async def info() -> dict[str, Any]:
         return {
             "system": monitor.static_info(),
-            "config": cfg.to_dict(),
+            "config": cfg.public_dict(),
             "server_bin_exists": cfg.server_bin.is_file(),
             "external_servers": find_external_servers(exclude_pids=pool.pids),
             "download_dir": str(downloader.dest_dir),
@@ -98,17 +146,34 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/config")
     async def get_config() -> dict[str, Any]:
-        return cfg.to_dict()
+        return cfg.public_dict()
 
     @app.post("/api/config")
     async def set_config(patch: dict = Body(...)) -> dict[str, Any]:
-        for key in ("llama_server_bin", "model_dirs", "history_size", "log_buffer_lines"):
+        if "llama_server_bin" in patch:
+            binary = Path(patch["llama_server_bin"]).expanduser()
+            if not binary.is_file():
+                raise HTTPException(400, f"no llama-server at {binary}")
+            cfg.llama_server_bin = patch["llama_server_bin"]
+        if "model_dirs" in patch:
+            dirs = [d for d in patch["model_dirs"] if str(d).strip()]
+            if not dirs:
+                raise HTTPException(400, "at least one model directory is required")
+            missing = [d for d in dirs if not Path(d).expanduser().is_dir()]
+            if missing:
+                raise HTTPException(400, f"not a directory: {', '.join(missing)}")
+            cfg.model_dirs = dirs
+            downloader.dest_dir = cfg.download_dir()
+        for key in ("history_size", "log_buffer_lines"):
             if key in patch:
-                setattr(cfg, key, patch[key])
+                try:
+                    setattr(cfg, key, max(10, int(patch[key])))
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"{key} must be a number") from None
         if "defaults" in patch:
             cfg.defaults = LaunchParams.from_dict(patch["defaults"])
         cfg.save()
-        return cfg.to_dict()
+        return cfg.public_dict()
 
     # ---------------------------------------------------------------- models
 
@@ -364,6 +429,10 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket(ws: WebSocket) -> None:
+        host = ws.client.host if ws.client else ""
+        if not allowed(ws.query_params.get("token", ""), host):
+            await ws.close(code=1008, reason="authentication required")
+            return
         await ws.accept()
         clients.add(ws)
         queue = pool.subscribe()
