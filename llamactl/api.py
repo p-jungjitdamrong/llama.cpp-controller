@@ -18,7 +18,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import hub
-from .config import Config, LaunchParams
+from .agent import AgentManager, Budget, Sandbox, ToolRegistry
+from .config import CONFIG_PATH, Config, LaunchParams
 from .hub import Downloader
 from .metrics import Monitor
 from .models import ModelIndex
@@ -33,6 +34,22 @@ def create_app(cfg: Config) -> FastAPI:
     pool = SupervisorPool(cfg)
     downloader = Downloader(cfg.download_dir())
     clients: set[WebSocket] = set()
+
+    def broadcast(kind: str, data: Any) -> None:
+        """Fire-and-forget push to every dashboard; used for agent events."""
+        payload = json.dumps({"type": kind, "data": data})
+        for ws in list(clients):
+            asyncio.create_task(_send(ws, payload))
+
+    async def _send(ws: WebSocket, payload: str) -> None:
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            clients.discard(ws)
+
+    registry = ToolRegistry(Sandbox(cfg.agent_roots))
+    agent = AgentManager(registry, CONFIG_PATH.parent / "agent-sessions.json",
+                         lambda event: broadcast("agent", event))
 
     def instance_or_404(instance_id: Any) -> ServerInstance:
         try:
@@ -258,7 +275,10 @@ def create_app(cfg: Config) -> FastAPI:
         if params.mode != "router" and not model_path:
             raise HTTPException(400, "model_path is required")
         try:
-            result = await pool.start(model_path, params)
+            result = await pool.start(model_path, params, force=bool(payload.get("force")))
+        except MemoryError as exc:
+            # 507 so the UI can offer "start anyway" instead of just failing
+            raise HTTPException(507, str(exc)) from exc
         except (FileNotFoundError, OSError, RuntimeError) as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -298,6 +318,78 @@ def create_app(cfg: Config) -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"cleared": cleared, "port": port}
+
+    # ----------------------------------------------------------------- agent
+
+    @app.get("/api/agent/info")
+    async def agent_info() -> dict[str, Any]:
+        return {
+            "tools": registry.describe(),
+            "groups": registry.groups,
+            "roots": registry.sandbox.describe(),
+            "defaults": cfg.agent_defaults,
+            "sessions": [s.public() for s in
+                         sorted(agent.sessions.values(), key=lambda s: -s.updated_at)[:20]],
+        }
+
+    @app.post("/api/agent/roots")
+    async def agent_roots(payload: dict = Body(...)) -> dict[str, Any]:
+        roots = payload.get("roots") or []
+        if not roots:
+            raise HTTPException(400, "at least one directory is required")
+        missing = [r for r in roots if not Path(r).expanduser().is_dir()]
+        if missing:
+            raise HTTPException(400, f"not a directory: {', '.join(missing)}")
+        cfg.agent_roots = roots
+        cfg.save()
+        registry.sandbox = Sandbox(roots)
+        for tool in list(registry.tools):  # handlers close over the old sandbox
+            del registry.tools[tool]
+        rebuilt = ToolRegistry(registry.sandbox)
+        registry.tools.update(rebuilt.tools)
+        return {"roots": registry.sandbox.describe()}
+
+    @app.get("/api/agent/session/{session_id}")
+    async def agent_session(session_id: str) -> dict[str, Any]:
+        session = agent.sessions.get(session_id)
+        if session is None:
+            raise HTTPException(404, "no such session")
+        return session.public()
+
+    @app.post("/api/agent/session/{session_id}/delete")
+    async def agent_session_delete(session_id: str) -> dict[str, Any]:
+        if not agent.delete_session(session_id):
+            raise HTTPException(404, "no such session")
+        return {"ok": True}
+
+    @app.post("/api/agent/run")
+    async def agent_run(payload: dict = Body(...)) -> dict[str, Any]:
+        message = (payload.get("message") or "").strip()
+        if not message:
+            raise HTTPException(400, "message is required")
+        instance_id = payload.get("instance")
+        instance = instance_or_404(instance_id) if instance_id is not None else None
+        if instance is None:
+            candidates = [i for i in pool.ready() if not i.is_router]
+            if not candidates:
+                raise HTTPException(409, "no model is ready to drive the agent")
+            instance = candidates[0]
+        if instance.state.value != "ready":
+            raise HTTPException(409, f"{instance.name} is not ready")
+
+        defaults = dict(cfg.agent_defaults)
+        defaults.update(payload.get("budget") or {})
+        run = agent.start(instance, payload.get("session"), message,
+                          payload.get("groups") or defaults.get("groups"),
+                          Budget.from_dict(defaults))
+        return {"run_id": run.id, "session_id": run.session.id,
+                "instance": instance.id, "model": instance.name}
+
+    @app.post("/api/agent/cancel")
+    async def agent_cancel(payload: dict = Body(...)) -> dict[str, Any]:
+        if not agent.cancel(payload.get("run_id") or ""):
+            raise HTTPException(404, "no such run")
+        return {"ok": True}
 
     # ------------------------------------------------------------- autostart
 

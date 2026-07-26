@@ -19,6 +19,16 @@ KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=90
 
+# A model that gets OOM-killed is one model failing, not the controller failing.
+# Without this systemd stops the whole unit and every other model goes with it.
+OOMPolicy=continue
+
+# Cap the models at a share of RAM so an over-committed start is contained here
+# instead of taking the whole machine down — on a box without swap, a global OOM
+# can hang or reboot it. The kernel kills inside this cgroup first.
+MemoryMax=85%
+MemoryHigh=78%
+
 Restart=on-failure
 RestartSec=3
 

@@ -103,6 +103,35 @@ def find_external_servers(exclude_pids: set[int] | None = None) -> list[dict[str
     return out
 
 
+def estimate_footprint(model_path: str, params: LaunchParams) -> dict[str, int]:
+    """Rough RAM a model will need: weights plus KV cache plus slack.
+
+    The weights are the file size (mmap still needs the pages resident to be
+    fast). The KV cache is 2 bytes per element for K and V across every layer,
+    which at a large context can rival the model itself.
+    """
+    from .gguf import read_metadata  # local import keeps module load cheap
+
+    path = Path(model_path)
+    try:
+        weights = path.stat().st_size
+    except OSError:
+        weights = 0
+    meta = read_metadata(path) if path.is_file() else {}
+
+    layers = meta.get("n_layer") or 32
+    embd = meta.get("n_embd") or 4096
+    heads = meta.get("n_head") or 32
+    heads_kv = meta.get("n_head_kv") or heads
+    head_dim = max(1, embd // max(1, heads))
+    ctx = max(params.ctx_size or 4096, 512) * max(1, params.parallel)
+    kv = 2 * 2 * layers * ctx * heads_kv * head_dim  # K and V, fp16
+
+    overhead = 350 * 1024**2  # compute buffers, runtime, http server
+    return {"weights": weights, "kv_cache": kv, "overhead": overhead,
+            "total": weights + kv + overhead}
+
+
 def port_in_use(host: str, port: int) -> bool:
     probe_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -546,7 +575,41 @@ class SupervisorPool:
             return candidate, f"port {wanted} was taken, using {candidate} instead"
         raise RuntimeError(f"no free port found near {wanted}")
 
-    async def start(self, model_path: str, params: LaunchParams) -> dict[str, Any]:
+    def check_memory(self, model_path: str, params: LaunchParams) -> dict[str, Any]:
+        """Compare the estimated footprint against what is genuinely spare.
+
+        Free memory alone is not enough to decide with: a model that is still
+        loading has barely touched its pages, so the machine looks emptier than
+        it is about to be. Everything already started is therefore counted at its
+        full estimated size, and the smaller of the two views wins.
+
+        Getting this wrong is not a polite failure — an over-commit here means
+        the kernel OOM killer, and on a box without swap it can take the whole
+        machine down.
+        """
+        from .metrics import read_memory
+
+        memory = read_memory()
+        estimate = estimate_footprint(model_path, params)
+        committed = sum(
+            estimate_footprint(i.model_path, i.params)["total"]
+            for i in self.instances.values() if i.pid and i.model_path
+        )
+        reserve = int(memory.get("total", 0) * 0.10) + 512 * 1024**2  # OS + page cache
+        headroom = max(0, memory.get("total", 0) - committed - reserve)
+        budget = min(memory.get("available", 0), headroom)
+
+        estimate.update({
+            "available": memory.get("available", 0),
+            "committed": committed,
+            "headroom": headroom,
+            "budget": budget,
+            "fits": budget >= estimate["total"],
+        })
+        return estimate
+
+    async def start(self, model_path: str, params: LaunchParams,
+                    force: bool = False) -> dict[str, Any]:
         async with self._lock:
             if not self.cfg.server_bin.is_file():
                 raise FileNotFoundError(f"llama-server not found: {self.cfg.server_bin}")
@@ -575,6 +638,18 @@ class SupervisorPool:
                         f"— stop or restart that instance instead"
                     )
                 resolved = str(model)
+
+                fit = self.check_memory(resolved, params)
+                if not fit["fits"] and not force:
+                    gb = 1024**3
+                    raise MemoryError(
+                        f"{model.name} needs about {fit['total'] / gb:.1f} GB "
+                        f"({fit['weights'] / gb:.1f} GB weights + "
+                        f"{fit['kv_cache'] / gb:.1f} GB KV cache at {params.ctx_size} "
+                        f"context) and only {fit['budget'] / gb:.1f} GB is spare "
+                        f"({fit['committed'] / gb:.1f} GB is already promised to "
+                        f"running models). Stop one, lower the context, or override."
+                    )
 
             port, note = await self._allocate_port(params)
             params.port = port

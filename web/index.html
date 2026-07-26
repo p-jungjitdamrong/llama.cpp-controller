@@ -137,6 +137,7 @@
 
     <div class="tabs">
       <button class="tab active" data-tab="logs">Logs</button>
+      <button class="tab" data-tab="agent">Agent</button>
       <button class="tab" data-tab="chat">Test chat</button>
       <button class="tab" data-tab="hub">Download</button>
       <button class="tab" data-tab="manage">Manage</button>
@@ -151,6 +152,33 @@
         <button id="btn-clear-log" class="btn small ghost">Clear view</button>
       </div>
       <pre id="log-view" class="log"></pre>
+    </div>
+
+    <div class="tab-panel" id="tab-agent">
+      <div class="agent-bar">
+        <select id="agent-instance" class="input" title="which model drives the loop"></select>
+        <div class="toolgroups" id="agent-groups"></div>
+        <label class="inline">steps
+          <input id="agent-steps" class="input tiny-input" type="number" min="1" max="30" value="8"></label>
+        <label class="inline">timeout s
+          <input id="agent-timeout" class="input tiny-input" type="number" min="30" max="3600" value="300"></label>
+        <span class="spacer"></span>
+        <select id="agent-session" class="input" title="conversation"></select>
+        <button id="agent-new" class="btn small ghost" title="Start a fresh conversation">New</button>
+        <button id="agent-roots" class="btn small ghost" title="Directories the tools may read">Roots</button>
+      </div>
+
+      <div id="agent-trace" class="agent-trace">
+        <p class="empty">Ask something about the files on this machine — the agent will use tools to find out.</p>
+      </div>
+
+      <form id="agent-form" class="chat-form">
+        <textarea id="agent-input" class="input" rows="2"
+                  placeholder="e.g. which file defines the router preset, and what does it write?"></textarea>
+        <button class="btn primary" id="agent-send" type="submit">Run</button>
+        <button class="btn danger" id="agent-stop" type="button" hidden>Stop</button>
+      </form>
+      <div class="dim tiny" id="agent-status"></div>
     </div>
 
     <div class="tab-panel" id="tab-chat">

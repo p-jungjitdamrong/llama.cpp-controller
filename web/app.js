@@ -10,6 +10,7 @@ const state = {
   info: null,
   logs: [],
   mode: "single",       // single | router
+  agent: { running: false, sessionId: null, runId: null, bubble: null, info: null },
   expandedRouters: new Set(),
   serverSignature: null,
   series: { cpu: [], mem: [], proc: [] },
@@ -49,7 +50,11 @@ async function api(path, options = {}) {
     ...options,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || data.error || response.statusText);
+  if (!response.ok) {
+    const error = new Error(data.detail || data.error || response.statusText);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -379,6 +384,15 @@ function syncInstanceSelects(servers) {
   const keepLog = logSelect.value;
   logSelect.innerHTML = `<option value="">all servers</option>${options}`;
   logSelect.value = keepLog;
+
+  // the agent needs a model that can hold a conversation, so no routers here
+  const agentSelect = $("#agent-instance");
+  const keepAgent = agentSelect.value;
+  agentSelect.innerHTML = servers
+    .filter((s) => s.state === "ready" && !s.is_router)
+    .map((s) => `<option value="${s.id}">${escapeHtml(s.model_name)} :${s.bind_port}</option>`)
+    .join("") || '<option value="">no model ready</option>';
+  if ([...agentSelect.options].some((o) => o.value === keepAgent)) agentSelect.value = keepAgent;
 
   const chatSelect = $("#chat-instance");
   const keepChat = chatSelect.value;
@@ -725,6 +739,8 @@ function connect() {
       renderDownloads(data.downloads || []);
     } else if (type === "log") {
       appendLog(data);
+    } else if (type === "agent") {
+      agentEvent(data);
     } else if (type === "hello") {
       state.logs = data.logs || [];
       renderLogs();
@@ -859,6 +875,191 @@ function renderDownloads(downloads) {
   });
 }
 
+/* ----------------------------------------------------------------- agent */
+
+function agentEl() { return $("#agent-trace"); }
+
+function agentAppend(html) {
+  const trace = agentEl();
+  trace.querySelector(".empty")?.remove();
+  trace.insertAdjacentHTML("beforeend", html);
+  trace.scrollTop = trace.scrollHeight;
+  return trace.lastElementChild;
+}
+
+function agentSetRunning(running) {
+  state.agent.running = running;
+  $("#agent-send").hidden = running;
+  $("#agent-stop").hidden = !running;
+  $("#agent-input").disabled = running;
+}
+
+function agentEvent(e) {
+  const trace = agentEl();
+  switch (e.event) {
+    case "start":
+      state.agent.runId = e.run_id;
+      state.agent.sessionId = e.session_id;
+      agentSetRunning(true);
+      $("#agent-status").textContent =
+        `${e.model} · tools: ${e.tools.join(", ") || "none"}`;
+      break;
+
+    case "step":
+      state.agent.bubble = null;
+      agentAppend(`<div class="astep" data-step="${e.step}">
+          <div class="astep-head">step ${e.step}</div></div>`);
+      break;
+
+    case "delta": {
+      if (!state.agent.bubble) {
+        const step = trace.querySelector(".astep:last-child") || trace;
+        step.insertAdjacentHTML("beforeend", '<div class="msg assistant athink"></div>');
+        state.agent.bubble = step.lastElementChild;
+      }
+      state.agent.bubble.textContent += e.text;
+      trace.scrollTop = trace.scrollHeight;
+      break;
+    }
+
+    case "tool_call": {
+      const step = trace.querySelector(".astep:last-child") || trace;
+      step.insertAdjacentHTML("beforeend", `<div class="atool running">
+          <div class="atool-head">
+            <span class="atool-name">${escapeHtml(e.name)}</span>
+            <span class="atool-args">${escapeHtml(JSON.stringify(e.arguments))}</span>
+            <span class="atool-time">running…</span>
+          </div></div>`);
+      trace.scrollTop = trace.scrollHeight;
+      break;
+    }
+
+    case "tool_result": {
+      const card = [...trace.querySelectorAll(".atool.running")].pop();
+      if (!card) break;
+      card.classList.remove("running");
+      card.classList.toggle("failed", !e.ok);
+      card.querySelector(".atool-time").textContent = `${e.seconds}s`;
+      const lines = (e.output || "").split("\n").length;
+      card.insertAdjacentHTML("beforeend",
+        `<details class="atool-out"><summary>${e.ok ? `${lines} lines` : "error"}</summary><pre></pre></details>`);
+      card.querySelector("pre").textContent = e.output;
+      trace.scrollTop = trace.scrollHeight;
+      break;
+    }
+
+    case "final": {
+      state.agent.bubble = null;
+      const gen = e.timings && e.timings.predicted_per_second;
+      agentAppend(`<div class="afinal"></div>`).textContent = e.content;
+      $("#agent-status").textContent =
+        `answered in ${e.seconds}s over ${e.step} step${e.step === 1 ? "" : "s"}` +
+        (gen ? ` · ${gen.toFixed(1)} tok/s` : "");
+      break;
+    }
+
+    case "budget":
+      agentAppend(`<div class="anotice warn">${escapeHtml(e.reason)}</div>`);
+      break;
+    case "cancelled":
+      agentAppend('<div class="anotice">cancelled</div>');
+      break;
+    case "error":
+      agentAppend(`<div class="anotice err">${escapeHtml(e.message)}</div>`);
+      break;
+    case "done":
+      agentSetRunning(false);
+      loadAgentInfo();
+      break;
+  }
+}
+
+async function loadAgentInfo() {
+  const info = await api("/api/agent/info");
+  state.agent.info = info;
+
+  const groups = $("#agent-groups");
+  if (!groups.children.length) {
+    groups.innerHTML = info.groups.map((g) => {
+      const on = (info.defaults.groups || []).includes(g) ? "checked" : "";
+      const count = info.tools.filter((t) => t.group === g).length;
+      return `<label class="check tiny"><input type="checkbox" value="${g}" ${on}> ${g} (${count})</label>`;
+    }).join("");
+    $("#agent-steps").value = info.defaults.max_steps ?? 8;
+    $("#agent-timeout").value = info.defaults.max_seconds ?? 300;
+  }
+  $("#agent-roots").title = `readable: ${info.roots.join(", ")}`;
+
+  const select = $("#agent-session");
+  const current = state.agent.sessionId || "";
+  select.innerHTML = '<option value="">new conversation</option>' +
+    info.sessions.map((s) =>
+      `<option value="${s.id}">${escapeHtml(s.title || s.id)} (${s.turns})</option>`).join("");
+  select.value = [...select.options].some((o) => o.value === current) ? current : "";
+}
+
+async function agentRun(event) {
+  event.preventDefault();
+  if (state.agent.running) return;
+  const input = $("#agent-input");
+  const message = input.value.trim();
+  const instance = $("#agent-instance").value;
+  if (!message) return;
+  if (!instance) { alert("start a model first — the agent needs one to think with"); return; }
+
+  agentAppend(`<div class="msg user"></div>`).textContent = message;
+  input.value = "";
+  agentSetRunning(true);
+  try {
+    await api("/api/agent/run", {
+      method: "POST",
+      body: JSON.stringify({
+        instance: +instance,
+        session: state.agent.sessionId || undefined,
+        message,
+        groups: $$("#agent-groups input:checked").map((c) => c.value),
+        budget: {
+          max_steps: +$("#agent-steps").value,
+          max_seconds: +$("#agent-timeout").value,
+        },
+      }),
+    });
+  } catch (err) {
+    agentAppend(`<div class="anotice err">${escapeHtml(err.message)}</div>`);
+    agentSetRunning(false);
+  }
+}
+
+async function loadAgentSession(sessionId) {
+  agentEl().innerHTML = "";
+  state.agent.sessionId = sessionId || null;
+  state.agent.bubble = null;
+  if (!sessionId) {
+    agentEl().innerHTML = '<p class="empty">New conversation — ask away.</p>';
+    return;
+  }
+  const session = await api(`/api/agent/session/${sessionId}`);
+  const pending = {};   // tool_call_id -> the call, so results show their arguments
+  for (const message of session.messages) {
+    if (message.role === "user") {
+      agentAppend('<div class="msg user"></div>').textContent = message.content;
+    } else if (message.role === "assistant") {
+      for (const call of message.tool_calls || []) pending[call.id] = call;
+      // a turn that only carries tool calls has whitespace content — not an answer
+      const text = (message.content || "").trim();
+      if (text) agentAppend('<div class="afinal"></div>').textContent = text;
+    } else if (message.role === "tool") {
+      const call = pending[message.tool_call_id];
+      const args = call ? call.function.arguments : "";
+      const card = agentAppend(`<div class="atool"><div class="atool-head">
+          <span class="atool-name">${escapeHtml(message.name || "tool")}</span>
+          <span class="atool-args">${escapeHtml(args)}</span><span class="atool-time"></span></div>
+          <details class="atool-out"><summary>result</summary><pre></pre></details></div>`);
+      card.querySelector("pre").textContent = message.content;
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ chat */
 
 async function sendChat(event) {
@@ -938,6 +1139,7 @@ async function init() {
   await loadExternal();
 
   renderAutostart((await api("/api/autostart")).entries);
+  await loadAgentInfo();
 
   const downloads = await api("/api/hub/downloads");
   $("#hub-dest").textContent = `downloads are saved to ${downloads.dest}`;
@@ -955,17 +1157,28 @@ $("#btn-start").onclick = async () => {
   const label = button.textContent;
   button.disabled = true;
   button.textContent = "Starting…";
+  const body = {
+    model_path: state.mode === "router" ? "" : state.selected,
+    params: getParams(),
+  };
   try {
-    await api("/api/server/start", {
-      method: "POST",
-      body: JSON.stringify({
-        model_path: state.mode === "router" ? "" : state.selected,
-        params: getParams(),
-      }),
-    });
+    await api("/api/server/start", { method: "POST", body: JSON.stringify(body) });
     document.querySelector('.tab[data-tab="logs"]').click();
   } catch (err) {
-    alert(`Failed to start: ${err.message}`);
+    // 507 means it should fit but does not — let the user override knowingly
+    if (err.status === 507 && confirm(`${err.message}\n\nStart it anyway?`)) {
+      try {
+        await api("/api/server/start", {
+          method: "POST",
+          body: JSON.stringify({ ...body, force: true }),
+        });
+        document.querySelector('.tab[data-tab="logs"]').click();
+      } catch (retry) {
+        alert(`Failed to start: ${retry.message}`);
+      }
+    } else if (err.status !== 507) {
+      alert(`Failed to start: ${err.message}`);
+    }
   } finally {
     button.textContent = label;
     updateStartButton();
@@ -1029,6 +1242,33 @@ $$(".params input, .params select").forEach((el) => {
   el.addEventListener("input", () => { updatePreview(); updateStartButton(); });
 });
 $("#btn-manage-refresh").onclick = () => { loadModels(); loadExternal(); };
+$("#agent-form").onsubmit = agentRun;
+$("#agent-input").onkeydown = (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#agent-form").requestSubmit(); }
+};
+$("#agent-stop").onclick = () => {
+  if (state.agent.runId) {
+    api("/api/agent/cancel", { method: "POST", body: JSON.stringify({ run_id: state.agent.runId }) })
+      .catch((err) => alert(err.message));
+  }
+};
+$("#agent-new").onclick = () => { $("#agent-session").value = ""; loadAgentSession(null); };
+$("#agent-session").onchange = (e) => loadAgentSession(e.target.value);
+$("#agent-roots").onclick = async () => {
+  const current = (state.agent.info?.roots || []).join(", ");
+  const answer = prompt("Directories the agent's tools may read (comma separated):", current);
+  if (answer === null) return;
+  try {
+    const data = await api("/api/agent/roots", {
+      method: "POST",
+      body: JSON.stringify({ roots: answer.split(",").map((s) => s.trim()).filter(Boolean) }),
+    });
+    await loadAgentInfo();
+    alert(`readable: ${data.roots.join("\n")}`);
+  } catch (err) {
+    alert(err.message);
+  }
+};
 $$(".tab").forEach((tab) => {
   tab.onclick = () => {
     $$(".tab").forEach((t) => t.classList.toggle("active", t === tab));

@@ -41,7 +41,10 @@ sed -e "s|__USER__|$RUN_USER|" \
     "$APP_DIR/systemd/$UNIT_NAME" > "$UNIT_PATH"
 
 systemctl daemon-reload
-systemctl enable --now "$UNIT_NAME"
+systemctl enable "$UNIT_NAME"
+# restart, not just start — reinstalling over a running service must pick up both
+# the new unit file and the new code
+systemctl restart "$UNIT_NAME"
 sleep 2
 systemctl --no-pager --lines=0 status "$UNIT_NAME" || true
 
