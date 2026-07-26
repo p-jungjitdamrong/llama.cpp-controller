@@ -15,9 +15,9 @@ while they work.
 ![Dependencies](https://img.shields.io/badge/dependencies-4-brightgreen)
 ![Build step](https://img.shields.io/badge/build%20step-none-lightgrey)
 
-<img src="docs/dashboard-metrics.png" alt="Dashboard with live CPU, memory and GPU graphs while two models run" width="100%">
+<img src="docs/dashboard-live.jpg" alt="Dashboard with live CPU, memory and GPU graphs while two models run" width="100%">
 
-<sub>Two models running: CPU, memory and per-model GPU load updating once a second, with llama.cpp's own log streaming underneath.</sub>
+<sub>Two models running. The graphs update once a second, and each server reports its own share of the GPU — here one model holds 93% of it while the other sits idle.</sub>
 
 </div>
 
@@ -113,6 +113,10 @@ are parsed from the timing lines. A minimal streaming chat box confirms a model
 actually answers.
 
 <div align="center">
+
+<img src="docs/dashboard-metrics.png" alt="Metric cards and the merged log stream from every running server" width="100%">
+
+<sub>Every server's output in one stream, tagged by model, with tokens/second parsed out of llama.cpp's timing lines.</sub>
 
 <img src="docs/test-chat.png" alt="Test chat with a reasoning model, thinking folded away once the answer starts" width="100%">
 
