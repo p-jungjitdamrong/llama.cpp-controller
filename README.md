@@ -15,7 +15,9 @@ while they work.
 ![Dependencies](https://img.shields.io/badge/dependencies-4-brightgreen)
 ![Build step](https://img.shields.io/badge/build%20step-none-lightgrey)
 
-<img src="docs/dashboard-manage.png" alt="Two models running, with every discovered GGUF listed in the Manage tab" width="100%">
+<img src="docs/dashboard-metrics.png" alt="Dashboard with live CPU, memory and GPU graphs while two models run" width="100%">
+
+<sub>Two models running: CPU, memory and per-model GPU load updating once a second, with llama.cpp's own log streaming underneath.</sub>
 
 </div>
 
@@ -87,6 +89,14 @@ fdinfo (AMD/Intel) or `nvidia-smi`.
 architecture, size, training context, running/startup state and disk headroom.
 Start or delete from there; deletion refuses anything outside the configured
 directories or currently being served.
+
+<div align="center">
+
+<img src="docs/dashboard-manage.png" alt="The Manage tab listing every discovered GGUF with quantisation, architecture, size and state" width="100%">
+
+<sub>Every GGUF the controller can see, with what is running, what starts on boot, and how much disk is left.</sub>
+
+</div>
 
 **Download from Hugging Face.** Search the Hub (or paste an `org/repo`), see
 every GGUF file with its size, download with a live progress bar. Interrupted

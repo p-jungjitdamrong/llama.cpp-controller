@@ -749,6 +749,10 @@ function connect() {
         });
         if (s.process_total && s.process_total.count) push("proc", s.process_total.cpu_percent);
       });
+      // draw straight away from the last sample instead of waiting for the next
+      // tick — otherwise the cards sit empty for a second on every page load
+      const latest = (data.history || []).at(-1);
+      if (latest) renderMetrics(latest);
     }
   };
 }
