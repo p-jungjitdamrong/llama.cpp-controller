@@ -16,7 +16,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Iterable
 
-from .gpu import GpuMonitor
+from .gpu import GpuMonitor, read_process_gpu
 
 HAS_PROC = Path("/proc/stat").exists()
 
@@ -96,18 +96,42 @@ class ProcessSampler:
 
     def __init__(self) -> None:
         self._prev: dict[int, tuple[float, float]] = {}
+        self._gpu_prev: dict[int, tuple[float, int]] = {}
 
     def sample(self, pid: int | None) -> dict[str, Any] | None:
         if not pid:
             return None
-        return self._sample_proc(pid) if HAS_PROC else self._sample_psutil(pid)
+        info = self._sample_proc(pid) if HAS_PROC else self._sample_psutil(pid)
+        if info is not None:
+            gpu = self._gpu(pid)
+            if gpu:
+                info["gpu"] = gpu
+        return info
+
+    def _gpu(self, pid: int) -> dict[str, Any] | None:
+        """This process's slice of the GPU, from DRM fdinfo."""
+        raw = read_process_gpu(pid)
+        if raw is None:
+            return None
+        busy_ns = sum(raw["engine_ns"].values())
+        now = time.monotonic()
+        percent = None
+        previous = self._gpu_prev.get(pid)
+        if previous and now > previous[0]:
+            # engine time is cumulative nanoseconds of work on the GPU
+            percent = round(min(100.0, 100.0 * (busy_ns - previous[1])
+                                / ((now - previous[0]) * 1e9)), 1)
+        self._gpu_prev[pid] = (now, busy_ns)
+        return {"vram": raw["vram"], "gtt": raw["gtt"], "percent": percent,
+                "engines": sorted(raw["engine_ns"])}
 
     def retain(self, pids: Iterable[int]) -> None:
         """Forget CPU baselines for processes that are gone."""
         keep = set(pids)
-        for pid in list(self._prev):
-            if pid not in keep:
-                del self._prev[pid]
+        for store in (self._prev, self._gpu_prev):
+            for pid in list(store):
+                if pid not in keep:
+                    del store[pid]
 
     def _cpu_percent(self, pid: int, cpu_seconds: float) -> float:
         now = time.monotonic()
@@ -279,11 +303,18 @@ class Monitor:
         sample["processes"] = {
             pid: proc for pid in pids if (proc := self.proc.sample(pid)) is not None
         }
-        totals = {"cpu_percent": 0.0, "rss": 0, "threads": 0}
+        nvidia = self.gpu.process_memory()
+        for pid, proc in sample["processes"].items():
+            if pid in nvidia:
+                proc.setdefault("gpu", {})["vram"] = nvidia[pid]
+        totals = {"cpu_percent": 0.0, "rss": 0, "threads": 0, "vram": 0, "gtt": 0}
         for proc in sample["processes"].values():
             totals["cpu_percent"] = round(totals["cpu_percent"] + proc["cpu_percent"], 1)
             totals["rss"] += proc["rss"]
             totals["threads"] += proc["threads"]
+            gpu = proc.get("gpu") or {}
+            totals["vram"] += gpu.get("vram") or 0
+            totals["gtt"] += gpu.get("gtt") or 0
         totals["count"] = len(sample["processes"])
         sample["process_total"] = totals
         self.history[-1] = sample  # replace the entry `sample()` just appended

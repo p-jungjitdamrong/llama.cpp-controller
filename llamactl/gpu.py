@@ -12,6 +12,7 @@ Backends are probed once at startup; unavailable ones simply never appear.
 
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import subprocess
@@ -69,6 +70,67 @@ def _pci_name(slot: str) -> str | None:
     vendor, device = fields[2], fields[3]
     vendor_short = vendor.split(",")[0].replace("Advanced Micro Devices", "AMD")
     return f"{vendor_short} {device}".strip()
+
+
+_FDINFO_SIZE = re.compile(r"^(\d+)\s*([KMG]iB)?$")
+_UNITS = {None: 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3}
+
+
+def read_process_gpu(pid: int) -> dict[str, Any] | None:
+    """Per-process GPU usage from DRM fdinfo (amdgpu, i915, xe).
+
+    A process opens the device more than once and every fd reports the same
+    totals, so entries are counted once per `drm-client-id`. Engine counters are
+    cumulative nanoseconds — the caller turns them into a percentage.
+    """
+    directory = Path(f"/proc/{pid}/fdinfo")
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return None
+
+    seen: set[str] = set()
+    vram = gtt = 0
+    engines: dict[str, int] = {}
+    driver = ""
+
+    for entry in entries:
+        try:
+            text = entry.read_text()
+        except OSError:
+            continue
+        if "drm-driver" not in text:
+            continue
+        fields: dict[str, str] = {}
+        for line in text.splitlines():
+            key, _, value = line.partition(":")
+            fields[key.strip()] = value.strip()
+
+        client = fields.get("drm-client-id", entry.name)
+        if client in seen:
+            continue
+        seen.add(client)
+        driver = driver or fields.get("drm-driver", "")
+
+        def size(key: str) -> int:
+            match = _FDINFO_SIZE.match(fields.get(key, ""))
+            if not match:
+                return 0
+            return int(match.group(1)) * _UNITS.get(match.group(2), 1)
+
+        vram += size("drm-memory-vram") or size("drm-resident-vram")
+        gtt += size("drm-memory-gtt") or size("drm-resident-gtt")
+        for key, value in fields.items():
+            if key.startswith("drm-engine-"):
+                try:
+                    engines[key[len("drm-engine-"):]] = engines.get(
+                        key[len("drm-engine-"):], 0) + int(value.split()[0])
+                except (ValueError, IndexError):
+                    continue
+
+    if not seen:
+        return None
+    return {"driver": driver, "vram": vram, "gtt": gtt, "engine_ns": engines}
 
 
 class GpuBackend:
@@ -248,6 +310,28 @@ class GpuMonitor:
     def describe(self) -> list[dict[str, Any]]:
         return [{"index": g["index"], "vendor": g["vendor"], "name": g["name"],
                  "driver": g.get("driver", "")} for g in self.sample()]
+
+    def process_memory(self) -> dict[int, int]:
+        """pid -> VRAM bytes, for drivers that only report it centrally."""
+        out: dict[int, int] = {}
+        for backend in self.backends:
+            if not isinstance(backend, NvidiaSmiBackend) or not backend.binary:
+                continue
+            try:
+                proc = subprocess.run(
+                    [backend.binary, "--query-compute-apps=pid,used_memory",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            for line in proc.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2 and parts[0].isdigit():
+                    try:
+                        out[int(parts[0])] = int(float(parts[1]) * 1024**2)
+                    except ValueError:
+                        continue
+        return out
 
     def sample(self) -> list[dict[str, Any]]:
         devices: list[dict[str, Any]] = []

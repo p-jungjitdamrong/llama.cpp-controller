@@ -254,45 +254,6 @@ select.input { cursor: pointer; }
 .dl[data-status="done"] .bar-fill { background: var(--accent-2); }
 .dl[data-status="cancelled"] .bar-fill { background: var(--dim); }
 
-/* ----------------------------------------------------------------- agent */
-.agent-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.agent-bar .input { width: auto; max-width: 230px; }
-.agent-bar .spacer { flex: 1; }
-.inline { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dim); }
-.tiny-input { width: 62px !important; }
-.toolgroups { display: flex; gap: 10px; }
-.check.tiny { font-size: 12px; gap: 4px; }
-
-.agent-trace {
-  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px; height: 48vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
-}
-.astep { border-left: 2px solid var(--border); padding-left: 10px; display: flex;
-         flex-direction: column; gap: 6px; }
-.astep-head { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
-.athink { background: transparent; border: 1px dashed var(--border); color: var(--dim);
-          font-size: 13px; max-width: 100%; }
-.afinal { background: var(--bg-soft); border-left: 3px solid var(--accent-2);
-          padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; }
-
-.atool { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; }
-.atool.running { border-color: var(--warn); }
-.atool.failed { border-color: var(--danger); }
-.atool-head { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
-.atool-name { font-family: var(--mono); color: var(--accent); }
-.atool-args { color: var(--dim); font-family: var(--mono); font-size: 11px;
-              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
-.atool-time { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap; }
-.atool-out summary { cursor: pointer; font-size: 11px; color: var(--dim); margin-top: 5px; }
-.atool-out pre {
-  font-family: var(--mono); font-size: 11px; background: var(--bg-elev);
-  border-radius: 4px; padding: 7px; margin: 6px 0 0; max-height: 240px;
-  overflow: auto; white-space: pre-wrap; word-break: break-word;
-}
-.anotice { font-size: 12px; color: var(--dim); border-left: 2px solid var(--border); padding-left: 8px; }
-.anotice.warn { color: var(--warn); border-color: var(--warn); }
-.anotice.err { color: var(--danger); border-color: var(--danger); }
-
 /* ---------------------------------------------------------------- manage */
 .manage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 12px; }
 .storage { font-size: 13px; }

@@ -67,11 +67,6 @@ class Config:
     autostart: list[dict] = field(default_factory=list)
     # last model started, restored into the UI on reload
     last_model: str = ""
-    # directories the agent's file tools may read
-    agent_roots: list[str] = field(default_factory=lambda: ["~"])
-    agent_defaults: dict = field(
-        default_factory=lambda: {"max_steps": 8, "max_seconds": 300, "max_tokens": 800,
-                                 "groups": ["files", "git"]})
 
     @property
     def server_bin(self) -> Path:
