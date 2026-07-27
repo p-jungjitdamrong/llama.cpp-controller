@@ -16,6 +16,9 @@ an existing `config.json` is called out under **Changed**.
   apply when it is started on its own and when a router loads it. Sweeps GPU
   offload and thread count by default, because those are the two that moved the
   numbers on modest hardware.
+- Each model's saved settings are shown in the Manage tab, marked when they are
+  the model's own rather than the controller's defaults. Until now the only way
+  to see them was to select the model and read the Launch panel.
 - Optional access control: a token checked on the API, the websocket and the
   proxy routes, usable as `Authorization: Bearer …` by any OpenAI-compatible
   client. Requests from the machine itself are exempt unless you say otherwise,
@@ -27,6 +30,16 @@ an existing `config.json` is called out under **Changed**.
   model was last started with, so a model tuned in "One model" mode keeps that
   tuning when a router loads it. Only the values that differ from the shared
   `[*]` section are written.
+
+### Fixed
+- Benchmarking an embedding model failed on every configuration: those servers
+  have no chat endpoint. They are now detected from the GGUF architecture or the
+  `--embedding` flag and probed with `/v1/embeddings`, ranked by latency instead
+  of tokens per second. On this hardware the GPU turns out to be twelve times
+  faster at it than the CPU.
+- Benchmarking a model that was already serving failed once per configuration
+  with "already running". The clash is now reported once, before the sweep, with
+  the option to stop the running copy and start it again afterwards.
 
 ## [0.3.0] — 2026-07-27
 

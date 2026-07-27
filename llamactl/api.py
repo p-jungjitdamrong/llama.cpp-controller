@@ -201,6 +201,7 @@ def create_app(cfg: Config) -> FastAPI:
             entry["running_port"] = running.get(entry["path"])
             entry["autostart"] = entry["path"] in autostarted
             entry["benchmark"] = cfg.benchmarks.get(entry["path"])
+            entry["has_preset"] = entry["path"] in cfg.presets
 
         dirs = []
         for directory in cfg.resolved_model_dirs():
@@ -271,9 +272,13 @@ def create_app(cfg: Config) -> FastAPI:
         port = int(payload.get("port") or 8199)
         try:
             run = tuner.start(model_path, port, payload.get("candidates"),
-                              payload.get("ctx_size"))
-        except (FileNotFoundError, RuntimeError) as exc:
+                              payload.get("ctx_size"),
+                              bool(payload.get("stop_running")))
+        except FileNotFoundError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            # 409 so the UI can offer to stop it and put it back
+            raise HTTPException(409, str(exc)) from exc
         return {"run_id": run.id, "total": run.total}
 
     @app.post("/api/bench/cancel")

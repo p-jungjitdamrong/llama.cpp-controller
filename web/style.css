@@ -346,3 +346,6 @@ select.input { cursor: pointer; }
 .bench-head #bench-close { margin-left: auto; }
 .bench-table tr.winner td { background: #2ea04322; }
 .bench-table tr.winner strong { color: var(--accent-2); }
+.preset { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.preset.saved { color: var(--text); }
+.preset.saved::before { content: "● "; color: var(--accent); font-size: 9px; }

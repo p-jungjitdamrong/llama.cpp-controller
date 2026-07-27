@@ -506,19 +506,38 @@ function renderScanDetails(data) {
 
 /* -------------------------------------------------------------- benchmark */
 
+function presetCell(model) {
+  const p = model.params || {};
+  const saved = model.has_preset;
+  const bits = [
+    `${p.n_gpu_layers} GPU`,
+    `${(p.ctx_size / 1024).toFixed(p.ctx_size % 1024 ? 1 : 0)}k ctx`,
+  ];
+  if (p.threads) bits.push(`${p.threads}t`);
+  if (p.parallel > 1) bits.push(`${p.parallel} slots`);
+  if ((p.extra_args || "").trim()) bits.push("+args");
+  return `<span class="${saved ? "preset saved" : "preset"}"
+      title="${saved ? "saved for this model" : "controller defaults"}: ${escapeHtml(JSON.stringify(p))}">${bits.join(" · ")}</span>`;
+}
+
 function benchCell(model) {
   const best = model.benchmark && model.benchmark.best;
   if (!best) return '<span class="dim">—</span>';
-  return `<span title="${escapeHtml(best.label || "")}">${best.generate_tps} t/s</span>`;
+  const value = best.generate_tps ? `${best.generate_tps} t/s`
+    : best.embed_ms ? `${best.embed_ms} ms` : "—";
+  return `<span title="${escapeHtml(best.label || "")}">${value}</span>`;
 }
 
 function benchRow(result, index) {
   const failed = Boolean(result.error);
+  const speed = result.mode === "embedding"
+    ? `<td class="num">${result.prompt_tps ?? "—"}</td>
+       <td class="num"><strong>${result.embed_ms} ms</strong></td>`
+    : `<td class="num">${result.prompt_tps ?? "—"}</td>
+       <td class="num"><strong>${result.generate_tps ?? "—"}</strong></td>`;
   const detail = failed
     ? `<td colspan="3" class="dim">${escapeHtml(result.error)}</td>`
-    : `<td class="num">${result.load_seconds ?? "—"}s</td>
-       <td class="num">${result.prompt_tps ?? "—"}</td>
-       <td class="num"><strong>${result.generate_tps ?? "—"}</strong></td>`;
+    : `<td class="num">${result.load_seconds ?? "—"}s</td>${speed}`;
   return `<tr data-index="${index}">
       <td>${escapeHtml(result.label || `config ${index + 1}`)}</td>
       ${detail}
@@ -530,14 +549,18 @@ function benchRow(result, index) {
 function renderBenchRows() {
   const rows = $("#bench-rows");
   const results = state.bench.results;
+  const embedding = results.some((r) => r.mode === "embedding");
+  $("#bench-speed-head").textContent = embedding ? "Embed" : "Generate";
   rows.innerHTML = results.map(benchRow).join("") ||
     '<tr><td colspan="5" class="dim">waiting for the first result…</td></tr>';
   if (state.bench.pending) {
     rows.insertAdjacentHTML("beforeend",
       `<tr><td colspan="5" class="dim">${escapeHtml(state.bench.pending)}</td></tr>`);
   }
-  const best = results.filter((r) => r.generate_tps)
-    .sort((a, b) => b.generate_tps - a.generate_tps)[0];
+  // embedding runs are ranked by latency, where lower wins
+  const chat = results.filter((r) => r.generate_tps).sort((a, b) => b.generate_tps - a.generate_tps);
+  const embed = results.filter((r) => r.embed_ms).sort((a, b) => a.embed_ms - b.embed_ms);
+  const best = chat[0] || embed[0];
   rows.querySelectorAll("tr").forEach((tr) => {
     const index = +tr.dataset.index;
     tr.classList.toggle("winner", Boolean(best) && results[index] === best);
@@ -561,6 +584,17 @@ async function startBenchmark(path) {
     });
     state.bench.runId = data.run_id;
   } catch (err) {
+    // 409 means it is serving right now — offer to borrow and give it back
+    if (err.status === 409 && confirm(`${err.message}\n\nStop it, tune, and start it again?`)) {
+      try {
+        const data = await api("/api/bench/run", {
+          method: "POST",
+          body: JSON.stringify({ model_path: path, stop_running: true }),
+        });
+        state.bench.runId = data.run_id;
+        return;
+      } catch (retry) { err.message = retry.message; }
+    }
     state.bench.pending = err.message;
     state.bench.running = false;
     $("#bench-cancel").hidden = true;
@@ -598,9 +632,11 @@ function benchEvent(e) {
     state.bench.running = false;
     $("#bench-cancel").hidden = true;
     $("#bench-note").textContent = e.best
-      ? `best: ${e.best.label} at ${e.best.generate_tps} tok/s — press Use to save it`
+      ? `best: ${e.best.label} at ${e.best.generate_tps ? `${e.best.generate_tps} tok/s` : `${e.best.embed_ms} ms`} — press Use to save it`
       : "no configuration completed";
     loadModels();
+  } else if (e.event === "note") {
+    $("#bench-note").textContent = e.message;
   } else if (e.event === "cancelled" || e.event === "error") {
     state.bench.pending = e.message || "cancelled";
     state.bench.running = false;
@@ -626,6 +662,7 @@ function manageRow(model) {
       <td>${escapeHtml(model.architecture || "—")}</td>
       <td class="num">${bytes(model.size)}</td>
       <td class="num">${model.n_ctx_train ? model.n_ctx_train.toLocaleString() : "—"}</td>
+      <td>${presetCell(model)}</td>
       <td class="num">${benchCell(model)}</td>
       <td>${badges.join(" ") || '<span class="dim tiny">idle</span>'}</td>
       <td class="right nowrap">
@@ -642,7 +679,7 @@ function renderManage(data) {
   const rows = $("#manage-rows");
   rows.innerHTML = models.length
     ? models.map(manageRow).join("")
-    : '<tr><td colspan="8" class="empty">no models found</td></tr>';
+    : '<tr><td colspan="9" class="empty">no models found</td></tr>';
 
   const totalSize = models.reduce((sum, m) => sum + m.size, 0);
   const disks = (data.dir_info || []).filter((d) => d.exists && d.free);
