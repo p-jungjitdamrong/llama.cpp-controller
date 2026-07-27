@@ -361,3 +361,9 @@ select.input { cursor: pointer; }
 }
 .argv .preset-ini { color: var(--accent-2); }
 .router-argv { margin-left: 15px; }
+.shared-note {
+  border-left: 2px solid var(--accent); padding: 6px 0 6px 9px;
+  margin: 0 0 10px; line-height: 1.5;
+}
+.shared-note strong { color: var(--text); }
+.shared-note code { font-family: var(--mono); font-size: 10px; }

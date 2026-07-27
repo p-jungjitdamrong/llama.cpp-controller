@@ -15,6 +15,10 @@ an existing `config.json` is called out under **Changed**.
   alongside the preset section behind it. That is the only real answer to whether
   a per-model preset reached the model — the router is asked rather than trusted.
 
+- Router mode says what the launch fields actually are now that presets are
+  written per model: the `[*]` section, reaching only models that have none of
+  their own, named and counted from the running router.
+
 ### Fixed
 - Flags that belong to one model — `--embedding`, `--pooling`, `-m`, `--hf-repo`,
   `--alias` — are refused on a router, because llama.cpp hands a router's own

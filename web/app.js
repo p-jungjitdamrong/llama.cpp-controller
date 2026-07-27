@@ -383,6 +383,7 @@ function renderServers(servers) {
   });
 
   syncInstanceSelects(servers);
+  if (state.mode === "router") renderSharedNote();
   $$(".model").forEach((el) => {
     const running = servers.find((s) => s.model_path === el.dataset.path && s.pid);
     el.classList.toggle("running", Boolean(running));
@@ -1020,10 +1021,39 @@ function setMode(mode) {
   $$(".single-only").forEach((el) => el.classList.toggle("hidden", mode !== "single"));
   $$(".router-only").forEach((el) => el.classList.toggle("hidden", mode !== "router"));
   $("#mode-help").textContent = mode === "router"
-    ? "One llama-server hosts a whole directory and loads models on demand. The flags below are written to a preset the router applies to every model it loads."
+    ? "One llama-server hosts a whole directory and loads models on demand."
     : "Starts one llama-server per model — run as many as memory allows.";
+  renderSharedNote();
   updateStartButton();
   updatePreview();
+}
+
+/* In router mode the launch fields are not "this model's settings" — they are
+   the [*] section of the preset, which only reaches models that have none of
+   their own. Say so, and say who that currently is. */
+function renderSharedNote() {
+  const note = $("#shared-note");
+  if (state.mode !== "router") { note.hidden = true; return; }
+  note.hidden = false;
+
+  const dir = $("#p-models-dir").value.trim();
+  const running = state.servers.find(
+    (s) => s.is_router && s.pid && s.params.models_dir === dir && s.router_models.length);
+
+  let detail;
+  if (running) {
+    const own = new Set(state.models.filter((m) => m.has_preset)
+      .map((m) => m.name.replace(/\.gguf$/i, "")));
+    const inherit = running.router_models.filter((m) => !own.has(m.id));
+    detail = inherit.length
+      ? `${inherit.length} of ${running.router_models.length} models use them right now: ${inherit.map((m) => m.id.split("/").pop()).join(", ")}`
+      : `every model this router knows has settings of its own, so these are only a fallback for new ones`;
+  } else {
+    const untuned = state.models.filter((m) => !m.has_preset && m.dir === dir).length;
+    detail = `models that have never been started keep these; ${untuned} in this folder have no settings of their own yet`;
+  }
+  note.innerHTML = `<strong>These are defaults, not this model's settings.</strong>
+    They become the <code>[*]</code> section of the router's preset. ${escapeHtml(detail)}`;
 }
 
 function updateStartButton() {
@@ -1462,6 +1492,7 @@ $$(".params input, .params select").forEach((el) => {
   el.addEventListener("input", () => { updatePreview(); updateStartButton(); });
 });
 $("#btn-help").onclick = toggleFieldHelp;
+$("#p-models-dir").addEventListener("input", () => renderSharedNote());
 $("#s-save").onclick = saveSettings;
 $("#bench-close").onclick = () => { $("#bench-panel").hidden = true; };
 $("#bench-start").onclick = () => startBenchmark(state.bench.path);
