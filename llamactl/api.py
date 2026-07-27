@@ -27,7 +27,7 @@ from .hub import Downloader
 from .metrics import Monitor
 from .models import ModelIndex
 from .supervisor import ServerInstance, SupervisorPool, find_external_servers
-from .tuner import Tuner, default_candidates
+from .tuner import Tuner, build_candidates, default_candidates, suggested_sweep
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -270,10 +270,18 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(409, "a benchmark is already running")
         # a port of its own so a sweep never disturbs what is already serving
         port = int(payload.get("port") or 8199)
+        candidates = payload.get("candidates")
+        if not candidates and payload.get("sweep"):
+            try:
+                candidates = build_candidates(payload["sweep"],
+                                              cfg.params_for(model_path))
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
         try:
-            run = tuner.start(model_path, port, payload.get("candidates"),
+            run = tuner.start(model_path, port, candidates,
                               payload.get("ctx_size"),
-                              bool(payload.get("stop_running")))
+                              bool(payload.get("stop_running")),
+                              int(payload.get("repeats") or 1))
         except FileNotFoundError as exc:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
@@ -307,7 +315,23 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/bench/candidates")
     async def bench_candidates(model_path: str) -> dict[str, Any]:
-        return {"candidates": default_candidates(cfg.params_for(model_path))}
+        """What to offer in the sweep form, sized to this particular model."""
+        base = cfg.params_for(model_path)
+        return {"candidates": default_candidates(base),
+                "suggested": suggested_sweep(model_path, base),
+                "current": {"n_gpu_layers": base.n_gpu_layers, "threads": base.threads,
+                            "ctx_size": base.ctx_size, "batch_size": base.batch_size},
+                "max_candidates": 32}
+
+    @app.post("/api/bench/preview")
+    async def bench_preview(payload: dict = Body(...)) -> dict[str, Any]:
+        """Expand a sweep without running it, so the UI can show the cost."""
+        try:
+            candidates = build_candidates(payload.get("sweep") or {},
+                                          cfg.params_for(payload.get("model_path", "")))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"candidates": candidates, "count": len(candidates)}
 
     # ------------------------------------------------------------- processes
 

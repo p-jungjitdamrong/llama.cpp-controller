@@ -113,9 +113,16 @@ serving models with nobody logged in.
 per candidate configuration, asks the same question, and times prompt processing
 and generation separately. The winning configuration can be saved as that model's
 settings with one press, which then apply both when it is started on its own and
-when a router loads it. On an integrated GPU the answer is often not the obvious
-one — a 0.5B model here generates at 53 tok/s on the CPU against 42 on the GPU,
-while the GPU reads prompts six times faster.
+when a router loads it. The values to sweep are yours to
+choose — GPU layers, threads, context, batch, flash attention — and each
+configuration can be run several times and reported as a median.
+
+On an integrated GPU the answers are rarely the obvious ones. A 0.5B model here
+generates at 53 tok/s on the CPU against 42 on the GPU, while the GPU reads
+prompts six times faster and embeds twelve times faster. And partial offload,
+which sounds like a sensible compromise, is the worst of both: an 8B model on
+this machine gives 12.6 tok/s entirely on the CPU, drops to 8.9 with a quarter
+of its layers on the GPU, and only reaches 22.7 once all of them are.
 
 **Access control when you want it.** Off by default; one switch in Settings mints
 a token that the dashboard, the API and any OpenAI-compatible client can use as

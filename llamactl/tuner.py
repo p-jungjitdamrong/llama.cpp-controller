@@ -64,6 +64,10 @@ def physical_cores() -> int:
     return max(1, (os.cpu_count() or 2) // 2)
 
 
+MAX_CANDIDATES = 32
+SWEEPABLE = ("n_gpu_layers", "threads", "ctx_size", "batch_size", "parallel", "flash_attn")
+
+
 def default_candidates(base: LaunchParams) -> list[dict[str, Any]]:
     """A 2x2 over the knobs worth sweeping, described for the UI."""
     cores = physical_cores()
@@ -73,6 +77,77 @@ def default_candidates(base: LaunchParams) -> list[dict[str, Any]]:
         {"label": f"GPU, {cores} threads", "n_gpu_layers": 99, "threads": cores},
         {"label": f"CPU, {cores} threads", "n_gpu_layers": 0, "threads": cores},
     ]
+
+
+def offload_steps(model_path: str) -> list[int]:
+    """Offload values worth trying for this model, including partial ones.
+
+    -ngl is a number of layers, not a switch: on a small shared GPU the best
+    setting is often part of the model on the GPU and the rest on the CPU.
+    """
+    from .gguf import read_metadata
+
+    layers = read_metadata(Path(model_path)).get("n_layer") or 32
+    quarters = [0, layers // 4, layers // 2, (layers * 3) // 4, layers]
+    return sorted({value for value in quarters if 0 <= value <= layers})
+
+
+def suggested_sweep(model_path: str, base: LaunchParams) -> dict[str, list[Any]]:
+    return {"n_gpu_layers": offload_steps(model_path),
+            "threads": sorted({0, physical_cores()})}
+
+
+def _describe(key: str, value: Any) -> str:
+    if key == "n_gpu_layers":
+        return "CPU" if value == 0 else f"{value} GPU"
+    if key == "threads":
+        return "auto threads" if value in (0, None) else f"{value}t"
+    if key == "ctx_size":
+        return f"{value // 1024}k ctx" if value % 1024 == 0 else f"{value} ctx"
+    if key == "batch_size":
+        return "default batch" if value in (0, None) else f"batch {value}"
+    if key == "parallel":
+        return f"{value} slot" + ("" if value == 1 else "s")
+    if key == "flash_attn":
+        return f"fa {value}"
+    return f"{key} {value}"
+
+
+def build_candidates(sweep: dict[str, list[Any]], base: LaunchParams) -> list[dict[str, Any]]:
+    """Cross product of the values chosen for each knob.
+
+    Only knobs with more than one value appear in the label, so the table reads
+    as the thing that varies rather than a wall of identical text.
+    """
+    import itertools
+
+    axes = {key: list(dict.fromkeys(values))          # de-duplicate, keep order
+            for key, values in sweep.items()
+            if key in SWEEPABLE and isinstance(values, list) and values}
+    if not axes:
+        return default_candidates(base)
+
+    varying = [key for key, values in axes.items() if len(values) > 1] or list(axes)
+    combos = []
+    for values in itertools.product(*axes.values()):
+        option = dict(zip(axes.keys(), values))
+        option["label"] = ", ".join(_describe(key, option[key]) for key in varying)
+        combos.append(option)
+        if len(combos) > MAX_CANDIDATES:
+            raise ValueError(
+                f"that is more than {MAX_CANDIDATES} configurations — "
+                f"drop a value or sweep one knob at a time")
+    return combos
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(v for v in values if v)
+    if not ordered:
+        return 0.0
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 
 class BenchRun:
@@ -108,7 +183,8 @@ class Tuner:
     def start(self, model_path: str, port: int,
               candidates: list[dict[str, Any]] | None = None,
               ctx_size: int | None = None,
-              stop_running: bool = False) -> BenchRun:
+              stop_running: bool = False,
+              repeats: int = 1) -> BenchRun:
         if self.busy:
             raise RuntimeError("a benchmark is already running")
         model = Path(model_path).expanduser()
@@ -135,7 +211,8 @@ class Tuner:
         options = candidates or default_candidates(base)
         run = BenchRun(uuid.uuid4().hex[:12], str(model), len(options))
         self.run = run
-        run.task = asyncio.create_task(self._sweep(run, base, options, port, restore))
+        run.task = asyncio.create_task(
+            self._sweep(run, base, options, port, restore, max(1, min(9, int(repeats)))))
         return run
 
     def cancel(self, run_id: str) -> bool:
@@ -146,9 +223,11 @@ class Tuner:
 
     async def _sweep(self, run: BenchRun, base: LaunchParams,
                      options: list[dict[str, Any]], port: int,
-                     restore: tuple[int, LaunchParams] | None = None) -> None:
+                     restore: tuple[int, LaunchParams] | None = None,
+                     repeats: int = 1) -> None:
         self._emit("start", model=Path(run.model_path).name, total=run.total,
-                   ctx_size=base.ctx_size, will_restore=bool(restore))
+                   ctx_size=base.ctx_size, will_restore=bool(restore),
+                   repeats=repeats)
         try:
             if restore is not None:
                 self._emit("note", message="stopping the running copy for the sweep")
@@ -166,7 +245,7 @@ class Tuner:
                            params={"n_gpu_layers": params.n_gpu_layers,
                                    "threads": params.threads,
                                    "ctx_size": params.ctx_size})
-                result = await self._measure(run, params, label)
+                result = await self._measure(run, params, label, repeats)
                 run.results.append(result)
                 self._emit("result", index=index, **result)
 
@@ -205,25 +284,27 @@ class Tuner:
         arch = (read_metadata(Path(model_path)).get("architecture") or "").lower()
         return "embedding" in arch or "bert" in arch
 
-    async def _probe_embedding(self, url: str, client: httpx.AsyncClient) -> dict[str, Any]:
+    async def _probe_embedding(self, url: str, client: httpx.AsyncClient,
+                               repeats: int = 3) -> dict[str, Any]:
         """Median latency over a few identical requests, plus tokens/s if reported."""
         timings = []
         tokens = None
-        for _ in range(3):
+        for _ in range(max(3, repeats)):
             started = time.monotonic()
             response = await client.post(f"{url}/v1/embeddings", json={"input": PROMPT})
             response.raise_for_status()
             timings.append((time.monotonic() - started) * 1000)
             usage = response.json().get("usage") or {}
             tokens = usage.get("prompt_tokens") or tokens
-        median = sorted(timings)[len(timings) // 2]
-        row: dict[str, Any] = {"mode": "embedding", "embed_ms": round(median, 1)}
+        row: dict[str, Any] = {"mode": "embedding", "runs": len(timings),
+                               "embed_ms": round(_median(timings), 1),
+                               "spread": [round(min(timings), 1), round(max(timings), 1)]}
         if tokens:
             row["prompt_tps"] = round(tokens / (median / 1000), 1)
         return row
 
     async def _measure(self, run: BenchRun, params: LaunchParams,
-                       label: str) -> dict[str, Any]:
+                       label: str, repeats: int = 1) -> dict[str, Any]:
         """Start the model with these params, time one answer, stop it again."""
         row: dict[str, Any] = {"label": label, "n_gpu_layers": params.n_gpu_layers,
                                "threads": params.threads}
@@ -244,18 +325,30 @@ class Tuner:
 
             async with httpx.AsyncClient(timeout=httpx.Timeout(20, read=300)) as client:
                 if self.is_embedding_model(run.model_path, params):
-                    row.update(await self._probe_embedding(instance.base_url, client))
+                    row.update(await self._probe_embedding(instance.base_url, client, repeats))
                 else:
-                    response = await client.post(
-                        f"{instance.base_url}/v1/chat/completions",
-                        json={"messages": [{"role": "user", "content": PROMPT}],
-                              "max_tokens": MAX_TOKENS, "temperature": 0.0})
-                    response.raise_for_status()
-                    timings = response.json().get("timings") or {}
+                    prompts, generates = [], []
+                    for attempt in range(repeats):
+                        if run.cancelled.is_set():
+                            break
+                        # a different opening each time, or llama.cpp would reuse
+                        # the cached prefix and report an unreal prompt speed
+                        text = f"Round {attempt + 1}. {PROMPT}"
+                        response = await client.post(
+                            f"{instance.base_url}/v1/chat/completions",
+                            json={"messages": [{"role": "user", "content": text}],
+                                  "max_tokens": MAX_TOKENS, "temperature": 0.0})
+                        response.raise_for_status()
+                        timings = response.json().get("timings") or {}
+                        prompts.append(timings.get("prompt_per_second") or 0)
+                        generates.append(timings.get("predicted_per_second") or 0)
+                        row["tokens"] = timings.get("predicted_n")
                     row["mode"] = "chat"
-                    row["prompt_tps"] = round(timings.get("prompt_per_second") or 0, 1)
-                    row["generate_tps"] = round(timings.get("predicted_per_second") or 0, 1)
-                    row["tokens"] = timings.get("predicted_n")
+                    row["runs"] = len(generates)
+                    row["prompt_tps"] = round(_median(prompts), 1)
+                    row["generate_tps"] = round(_median(generates), 1)
+                    if len(generates) > 1:
+                        row["spread"] = [round(min(generates), 1), round(max(generates), 1)]
         except MemoryError as exc:
             row["error"] = str(exc)
         except httpx.HTTPStatusError as exc:

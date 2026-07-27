@@ -349,3 +349,7 @@ select.input { cursor: pointer; }
 .preset { font-size: 11px; color: var(--dim); white-space: nowrap; }
 .preset.saved { color: var(--text); }
 .preset.saved::before { content: "● "; color: var(--accent); font-size: 9px; }
+.bench-setup { border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 10px; }
+.bench-setup .sgrid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.bench-setup label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); }
+.bench-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }

@@ -194,6 +194,30 @@
           <button id="bench-cancel" class="btn small danger" hidden>Stop</button>
           <button id="bench-close" class="btn small ghost">Close</button>
         </div>
+
+        <div id="bench-setup" class="bench-setup">
+          <p class="dim tiny">Comma-separated values. Every combination is started once
+             and timed, so keep the list short — GPU layers is a count, not a switch,
+             which is why part of the model on the GPU is worth trying.</p>
+          <div class="sgrid">
+            <label>GPU layers <span class="hint">-ngl</span>
+              <input id="b-ngl" class="input" type="text"></label>
+            <label>Threads <span class="hint">-t</span>
+              <input id="b-threads" class="input" type="text"></label>
+            <label>Context <span class="hint">-c</span>
+              <input id="b-ctx" class="input" type="text"></label>
+            <label>Batch <span class="hint">-b, blank to skip</span>
+              <input id="b-batch" class="input" type="text" placeholder=""></label>
+            <label>Flash attention <span class="hint">-fa, blank to skip</span>
+              <input id="b-fa" class="input" type="text" placeholder="auto, on, off"></label>
+            <label>Runs per configuration
+              <input id="b-repeats" class="input" type="number" min="1" max="9" value="1"></label>
+          </div>
+          <div class="bench-actions">
+            <button id="bench-start" class="btn primary">Run sweep</button>
+            <span class="dim tiny" id="bench-estimate"></span>
+          </div>
+        </div>
         <table class="mtable bench-table">
           <thead><tr>
             <th>Configuration</th><th class="num">Load</th><th class="num">Prompt</th>

@@ -528,13 +528,18 @@ function benchCell(model) {
   return `<span title="${escapeHtml(best.label || "")}">${value}</span>`;
 }
 
+function spread(result) {
+  if (!result.spread || result.runs < 2) return "";
+  return `<div class="dim tiny">${result.spread[0]}–${result.spread[1]} over ${result.runs}</div>`;
+}
+
 function benchRow(result, index) {
   const failed = Boolean(result.error);
   const speed = result.mode === "embedding"
     ? `<td class="num">${result.prompt_tps ?? "—"}</td>
-       <td class="num"><strong>${result.embed_ms} ms</strong></td>`
+       <td class="num"><strong>${result.embed_ms} ms</strong>${spread(result)}</td>`
     : `<td class="num">${result.prompt_tps ?? "—"}</td>
-       <td class="num"><strong>${result.generate_tps ?? "—"}</strong></td>`;
+       <td class="num"><strong>${result.generate_tps ?? "—"}</strong>${spread(result)}</td>`;
   const detail = failed
     ? `<td colspan="3" class="dim">${escapeHtml(result.error)}</td>`
     : `<td class="num">${result.load_seconds ?? "—"}s</td>${speed}`;
@@ -570,27 +575,77 @@ function renderBenchRows() {
   });
 }
 
-async function startBenchmark(path) {
-  state.bench = { path, results: [], pending: "starting…", running: true };
+function parseList(value, cast = Number) {
+  return value.split(",").map((s) => s.trim()).filter(Boolean)
+    .map((s) => (cast === Number ? Number(s) : s))
+    .filter((v) => cast !== Number || Number.isFinite(v));
+}
+
+function currentSweep() {
+  const sweep = {
+    n_gpu_layers: parseList($("#b-ngl").value),
+    threads: parseList($("#b-threads").value),
+    ctx_size: parseList($("#b-ctx").value),
+    batch_size: parseList($("#b-batch").value),
+    flash_attn: parseList($("#b-fa").value, String),
+  };
+  for (const key of Object.keys(sweep)) if (!sweep[key].length) delete sweep[key];
+  return sweep;
+}
+
+async function previewSweep() {
+  const repeats = +$("#b-repeats").value || 1;
+  try {
+    const data = await api("/api/bench/preview", {
+      method: "POST",
+      body: JSON.stringify({ model_path: state.bench.path, sweep: currentSweep() }),
+    });
+    // roughly a load plus a probe per run; enough to warn before a long sweep
+    const seconds = data.count * (8 + repeats * 12);
+    $("#bench-estimate").textContent =
+      `${data.count} configuration${data.count === 1 ? "" : "s"} × ${repeats} run${repeats === 1 ? "" : "s"} — roughly ${duration(seconds) || "a moment"}`;
+  } catch (err) {
+    $("#bench-estimate").textContent = err.message;
+  }
+}
+
+async function openBenchmark(path) {
+  state.bench = { path, results: [], pending: "", running: false };
   $("#bench-panel").hidden = false;
+  $("#bench-setup").hidden = false;
+  $("#bench-cancel").hidden = true;
+  $("#bench-title").textContent = `Tune ${path.split("/").pop()}`;
+  $("#bench-note").textContent = "";
+  $("#bench-rows").innerHTML = "";
+  $("#bench-panel").scrollIntoView({ block: "start" });
+
+  const info = await api(`/api/bench/candidates?model_path=${encodeURIComponent(path)}`);
+  $("#b-ngl").value = (info.suggested.n_gpu_layers || []).join(", ");
+  $("#b-threads").value = (info.suggested.threads || []).join(", ");
+  $("#b-ctx").value = info.current.ctx_size;
+  $("#b-batch").value = "";
+  $("#b-fa").value = "";
+  previewSweep();
+}
+
+async function startBenchmark(path) {
+  state.bench = { ...state.bench, path, results: [], pending: "starting…", running: true };
+  $("#bench-setup").hidden = true;
   $("#bench-cancel").hidden = false;
   $("#bench-title").textContent = `Tuning ${path.split("/").pop()}`;
-  $("#bench-note").textContent = "each configuration is started, asked one question, then stopped";
+  $("#bench-note").textContent = "each configuration is started, timed, then stopped";
   renderBenchRows();
-  $("#bench-panel").scrollIntoView({ block: "start" });
   try {
-    const data = await api("/api/bench/run", {
-      method: "POST", body: JSON.stringify({ model_path: path }),
-    });
+    const body = { model_path: path, sweep: currentSweep(), repeats: +$("#b-repeats").value || 1 };
+    const data = await api("/api/bench/run", { method: "POST", body: JSON.stringify(body) });
     state.bench.runId = data.run_id;
   } catch (err) {
     // 409 means it is serving right now — offer to borrow and give it back
     if (err.status === 409 && confirm(`${err.message}\n\nStop it, tune, and start it again?`)) {
       try {
-        const data = await api("/api/bench/run", {
-          method: "POST",
-          body: JSON.stringify({ model_path: path, stop_running: true }),
-        });
+        const body = { model_path: path, sweep: currentSweep(),
+                       repeats: +$("#b-repeats").value || 1, stop_running: true };
+        const data = await api("/api/bench/run", { method: "POST", body: JSON.stringify(body) });
         state.bench.runId = data.run_id;
         return;
       } catch (retry) { err.message = retry.message; }
@@ -692,7 +747,7 @@ function renderManage(data) {
     `<div class="dim tiny">downloads go to ${escapeHtml(data.download_dir || "")}</div>`;
 
   rows.querySelectorAll("button[data-mtune]").forEach((button) => {
-    button.onclick = () => startBenchmark(button.dataset.mtune);
+    button.onclick = () => openBenchmark(button.dataset.mtune);
   });
   rows.querySelectorAll("button[data-mstart]").forEach((button) => {
     button.onclick = () => { selectModel(button.dataset.mstart); $("#btn-start").click(); };
@@ -1375,6 +1430,10 @@ $$(".params input, .params select").forEach((el) => {
 $("#btn-help").onclick = toggleFieldHelp;
 $("#s-save").onclick = saveSettings;
 $("#bench-close").onclick = () => { $("#bench-panel").hidden = true; };
+$("#bench-start").onclick = () => startBenchmark(state.bench.path);
+["#b-ngl", "#b-threads", "#b-ctx", "#b-batch", "#b-fa", "#b-repeats"].forEach((sel) => {
+  $(sel).addEventListener("input", () => previewSweep());
+});
 $("#bench-cancel").onclick = () => {
   if (state.bench.runId) {
     api("/api/bench/cancel", { method: "POST", body: JSON.stringify({ run_id: state.bench.runId }) })

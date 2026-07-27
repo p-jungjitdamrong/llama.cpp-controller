@@ -10,6 +10,12 @@ an existing `config.json` is called out under **Changed**.
 ## [Unreleased]
 
 ### Added
+- The tuning sweep is now yours to define: comma-separated values for GPU layers,
+  threads, context, batch and flash attention, expanded into every combination,
+  with a preview of how many runs that is and roughly how long. GPU layers is a
+  count rather than a switch, so partial offload is offered too — the suggested
+  values come from the model's own layer count. Each configuration can be run
+  several times, reported as a median with the spread.
 - **Tune** in the Manage tab: each candidate configuration is started for real,
   asked the same question, and timed, with prompt processing and generation
   reported separately. Any row can be saved as that model's settings, which then
