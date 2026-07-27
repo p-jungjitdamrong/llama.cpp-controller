@@ -299,6 +299,11 @@ against what is already promised.
 cache of a shared prefix; a loop that re-sends its history every step gets that
 for free only if it keeps talking to the same server.
 
+**Python will not tell you about a name until someone runs that line.** A helper
+deleted in a refactor and a variable renamed in one place of two both compiled
+cleanly and failed in front of a user. `scripts/check-names.py` and
+`scripts/smoke-test.py` between them catch both shapes in about a second.
+
 **Don't `pkill -f` over SSH.** The pattern matches the remote shell's own command
 line, and the session kills itself. `scripts/ctl.sh` uses a pid file.
 

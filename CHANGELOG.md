@@ -38,6 +38,11 @@ an existing `config.json` is called out under **Changed**.
   `[*]` section are written.
 
 ### Fixed
+- Tuning an embedding model raised `NameError` after a variable was renamed in
+  one place and not the other. `scripts/check-names.py` now walks the AST of
+  every module and reports names that are used but never defined — the same
+  fault class as the helper lost with the agent removal, and one that neither
+  compiling nor the route smoke test can see.
 - Benchmarking an embedding model failed on every configuration: those servers
   have no chat endpoint. They are now detected from the GGUF architecture or the
   `--embedding` flag and probed with `/v1/embeddings`, ranked by latency instead

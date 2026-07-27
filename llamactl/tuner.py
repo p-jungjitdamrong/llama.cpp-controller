@@ -296,11 +296,12 @@ class Tuner:
             timings.append((time.monotonic() - started) * 1000)
             usage = response.json().get("usage") or {}
             tokens = usage.get("prompt_tokens") or tokens
+        middle = _median(timings)
         row: dict[str, Any] = {"mode": "embedding", "runs": len(timings),
-                               "embed_ms": round(_median(timings), 1),
+                               "embed_ms": round(middle, 1),
                                "spread": [round(min(timings), 1), round(max(timings), 1)]}
-        if tokens:
-            row["prompt_tps"] = round(tokens / (median / 1000), 1)
+        if tokens and middle:
+            row["prompt_tps"] = round(tokens / (middle / 1000), 1)
         return row
 
     async def _measure(self, run: BenchRun, params: LaunchParams,
