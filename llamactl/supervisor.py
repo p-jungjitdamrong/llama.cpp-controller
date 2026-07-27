@@ -434,6 +434,10 @@ class ServerInstance:
                 "id": item.get("id", ""),
                 "status": (item.get("status") or {}).get("value", "unknown"),
                 "source": item.get("source", ""),
+                # the argv the router will spawn this model with, straight from
+                # the router — the only honest answer to "did my preset apply?"
+                "args": ((item.get("status") or {}).get("args") or [])[1:],
+                "preset": ((item.get("status") or {}).get("preset") or "").strip(),
                 "modalities": (item.get("architecture") or {}).get("input_modalities", []),
             }
             for item in data
@@ -640,6 +644,18 @@ class SupervisorPool:
                 directory = Path(params.models_dir).expanduser()
                 if not directory.is_dir():
                     raise FileNotFoundError(f"models directory not found: {directory}")
+                # llama.cpp hands the router's own flags down to every child it
+                # spawns, so a per-model flag here breaks every model at once
+                per_model = {"-m", "--model", "--hf-repo", "-hf", "--embedding",
+                             "--embeddings", "--pooling", "--alias", "-a"}
+                offenders = [a for a in shlex.split(params.extra_args or "")
+                             if a in per_model]
+                if offenders:
+                    raise RuntimeError(
+                        f"{' '.join(offenders)} belongs to a single model, and a "
+                        f"router passes its own flags to every model it loads — "
+                        f"remove it from Extra args, or set it per model instead"
+                    )
                 params.models_dir = str(directory)
                 for other in self.instances.values():
                     if (other.is_router and other.pid

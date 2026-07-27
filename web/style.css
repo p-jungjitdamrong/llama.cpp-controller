@@ -353,3 +353,11 @@ select.input { cursor: pointer; }
 .bench-setup .sgrid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .bench-setup label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); }
 .bench-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.argv summary { cursor: pointer; font-size: 11px; color: var(--dim); margin-top: 5px; }
+.argv pre {
+  font-family: var(--mono); font-size: 11px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 5px; padding: 7px 9px;
+  margin: 6px 0 0; white-space: pre-wrap; word-break: break-all; color: var(--dim);
+}
+.argv .preset-ini { color: var(--accent-2); }
+.router-argv { margin-left: 15px; }

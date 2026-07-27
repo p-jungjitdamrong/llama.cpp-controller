@@ -9,6 +9,20 @@ an existing `config.json` is called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- Every running server can show the exact command line it was started with, and
+  each model a router holds shows the argv the router itself reports it will use,
+  alongside the preset section behind it. That is the only real answer to whether
+  a per-model preset reached the model — the router is asked rather than trusted.
+
+### Fixed
+- Flags that belong to one model — `--embedding`, `--pooling`, `-m`, `--hf-repo`,
+  `--alias` — are refused on a router, because llama.cpp hands a router's own
+  flags to every model it spawns. A router started with `--embedding` in Extra
+  args quietly put every chat model into embedding mode.
+- Extra args no longer carry across when switching between One model and Router:
+  they belong to the selected model, and a router is not one.
+
 ## [0.4.0] — 2026-07-27
 
 ### Added

@@ -11,6 +11,7 @@ const state = {
   logs: [],
   mode: "single",       // single | router
   settings: { config: {}, auth: {} },
+  extraArgs: { single: "", router: "" },
   bench: { path: null, results: [], running: false },
   expandedRouters: new Set(),
   serverSignature: null,
@@ -262,6 +263,8 @@ function serverCard(server) {
         </span>
       </div>
       <div class="server-meta dim tiny">${serverMeta(server) || "&nbsp;"}</div>
+      ${server.argv && server.argv.length ? `<details class="argv">
+        <summary>command</summary><pre>${escapeHtml(server.argv.join(" "))}</pre></details>` : ""}
       ${server.last_error ? `<div class="server-error tiny">${escapeHtml(server.last_error)}</div>` : ""}
       ${server.is_router ? routerModels(server) : ""}
     </div>`;
@@ -275,13 +278,20 @@ function routerModels(server) {
   const loadedModels = server.router_models.filter((m) => m.status === "loaded");
   const rows = server.router_models.map((m) => {
     const loaded = m.status === "loaded";
-    return `<div class="router-row">
+    // the router reports the argv it will use, which is the only real proof
+    // that a per-model preset reached the model
+    const detail = (m.args && m.args.length) ? `<details class="argv router-argv">
+        <summary>settings this model will start with</summary>
+        <pre>${escapeHtml(m.args.join(" "))}</pre>
+        ${m.preset ? `<pre class="preset-ini">${escapeHtml(m.preset)}</pre>` : ""}
+      </details>` : "";
+    return `<div class="router-row-wrap"><div class="router-row">
         <span class="dot-state ${loaded ? "on" : ""}"></span>
         <span class="router-id" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</span>
         <span class="dim tiny">${escapeHtml(m.source || "")}</span>
         <button class="btn small ghost" data-router="${loaded ? "unload" : "load"}"
                 data-id="${server.id}" data-model="${escapeHtml(m.id)}">${loaded ? "Unload" : "Load"}</button>
-      </div>`;
+      </div>${detail}</div>`;
   }).join("");
   // collapsed by default: the summary already says what is resident
   const resident = loadedModels.length
@@ -469,7 +479,11 @@ function renderModels() {
 function selectModel(path) {
   state.selected = path;
   const model = state.models.find((m) => m.path === path);
-  if (model && model.params) setParams(model.params);
+  if (model && model.params) {
+    setParams(model.params);
+    state.extraArgs.single = model.params.extra_args || "";
+    if (state.mode === "router") $("#p-extra").value = state.extraArgs.router || "";
+  }
   setMode("single");
   renderModels();
   updateStartButton();
@@ -995,6 +1009,12 @@ function setParams(p) {
 }
 
 function setMode(mode) {
+  // extra args belong to the selected model; a router passes its own flags to
+  // every model it loads, so carrying them across would break all of them
+  if (mode !== state.mode) {
+    state.extraArgs = { ...state.extraArgs, [state.mode]: $("#p-extra").value };
+    $("#p-extra").value = state.extraArgs[mode] || "";
+  }
   state.mode = mode;
   $$(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   $$(".single-only").forEach((el) => el.classList.toggle("hidden", mode !== "single"));
