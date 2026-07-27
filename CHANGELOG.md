@@ -9,6 +9,8 @@ an existing `config.json` is called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-27
+
 ### Added
 - Sweeps no longer measure the same configuration several times over: offload
   values are clamped to the model's layer count first, so 25, 50, 75 and 99 all
@@ -126,7 +128,8 @@ an existing `config.json` is called out under **Changed**.
   and GPU metrics from `/proc` and `/sys`, streamed logs, GGUF discovery with
   header parsing, and a streaming test chat.
 
-[Unreleased]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/p-jungjitdamrong/llama.cpp-controller/releases/tag/v0.1.0
