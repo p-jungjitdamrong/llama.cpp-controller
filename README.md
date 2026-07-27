@@ -61,6 +61,7 @@ twice.
 | **Router mode** | Or let one server host a whole directory and load on demand — with the flags actually passed through, which llama.cpp's own router does not do for you, per model as well as shared |
 | **Per-model GPU** | Not just the card total: VRAM, GTT and GPU share attributed to each model, from DRM fdinfo or `nvidia-smi` |
 | **Memory guard** | Starts are refused when weights plus KV cache will not fit, counting what is already promised — not what happens to be free |
+| **Tuned by measurement** | *Tune* sweeps GPU offload and thread count for one model, then saves the winner as its settings |
 | **Hugging Face built in** | Search, browse quantisations by size, download with resumable progress, appear in the model list |
 | **Survives a reboot** | Save the running set, install the systemd unit, and the box comes back serving models with nobody logged in |
 
@@ -107,6 +108,14 @@ transfers resume with a Range request. No token, no `huggingface_hub` dependency
 controller brings the same set back next time it starts, one at a time, waiting
 for each to load. With the systemd unit, the box comes back from a reboot
 serving models with nobody logged in.
+
+**Finds each model's settings by measuring.** *Tune* on a model starts it once
+per candidate configuration, asks the same question, and times prompt processing
+and generation separately. The winning configuration can be saved as that model's
+settings with one press, which then apply both when it is started on its own and
+when a router loads it. On an integrated GPU the answer is often not the obvious
+one — a 0.5B model here generates at 53 tok/s on the CPU against 42 on the GPU,
+while the GPU reads prompts six times faster.
 
 **Access control when you want it.** Off by default; one switch in Settings mints
 a token that the dashboard, the API and any OpenAI-compatible client can use as

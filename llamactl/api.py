@@ -27,6 +27,7 @@ from .hub import Downloader
 from .metrics import Monitor
 from .models import ModelIndex
 from .supervisor import ServerInstance, SupervisorPool, find_external_servers
+from .tuner import Tuner, default_candidates
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -37,6 +38,19 @@ def create_app(cfg: Config) -> FastAPI:
     pool = SupervisorPool(cfg)
     downloader = Downloader(cfg.download_dir())
     clients: set[WebSocket] = set()
+
+    def broadcast(kind: str, data: Any) -> None:
+        payload = json.dumps({"type": kind, "data": data})
+        for ws in list(clients):
+            asyncio.create_task(_push(ws, payload))
+
+    async def _push(ws: WebSocket, payload: str) -> None:
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            clients.discard(ws)
+
+    tuner = Tuner(cfg, pool, lambda event: broadcast("bench", event))
 
     def instance_or_404(instance_id: Any) -> ServerInstance:
         try:
@@ -186,6 +200,7 @@ def create_app(cfg: Config) -> FastAPI:
             entry["params"] = asdict(cfg.params_for(entry["path"]))
             entry["running_port"] = running.get(entry["path"])
             entry["autostart"] = entry["path"] in autostarted
+            entry["benchmark"] = cfg.benchmarks.get(entry["path"])
 
         dirs = []
         for directory in cfg.resolved_model_dirs():
@@ -232,6 +247,62 @@ def create_app(cfg: Config) -> FastAPI:
                          if Path(e.get("model_path", "")).resolve() != target]
         cfg.save()
         return {"deleted": str(target), "freed": size}
+
+    # ------------------------------------------------------------ benchmark
+
+    @app.get("/api/bench")
+    async def bench_status() -> dict[str, Any]:
+        run = tuner.run
+        return {
+            "running": bool(run),
+            "run_id": run.id if run else None,
+            "model_path": run.model_path if run else None,
+            "results": {path: record for path, record in cfg.benchmarks.items()},
+        }
+
+    @app.post("/api/bench/run")
+    async def bench_run(payload: dict = Body(...)) -> dict[str, Any]:
+        model_path = payload.get("model_path")
+        if not model_path:
+            raise HTTPException(400, "model_path is required")
+        if tuner.busy:
+            raise HTTPException(409, "a benchmark is already running")
+        # a port of its own so a sweep never disturbs what is already serving
+        port = int(payload.get("port") or 8199)
+        try:
+            run = tuner.start(model_path, port, payload.get("candidates"),
+                              payload.get("ctx_size"))
+        except (FileNotFoundError, RuntimeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"run_id": run.id, "total": run.total}
+
+    @app.post("/api/bench/cancel")
+    async def bench_cancel(payload: dict = Body(...)) -> dict[str, Any]:
+        if not tuner.cancel(payload.get("run_id") or ""):
+            raise HTTPException(404, "no such run")
+        return {"ok": True}
+
+    @app.post("/api/bench/apply")
+    async def bench_apply(payload: dict = Body(...)) -> dict[str, Any]:
+        """Save a measured configuration as this model's settings."""
+        model_path = payload.get("model_path") or ""
+        record = cfg.benchmarks.get(model_path)
+        if not record or not record.get("best"):
+            raise HTTPException(404, "no benchmark result for that model")
+        chosen = payload.get("result") or record["best"]
+        params = asdict(cfg.params_for(model_path))
+        for key in ("n_gpu_layers", "threads"):
+            if chosen.get(key) is not None:
+                params[key] = chosen[key]
+        if record.get("ctx_size"):
+            params["ctx_size"] = record["ctx_size"]
+        cfg.presets[model_path] = params
+        cfg.save()
+        return {"model_path": model_path, "params": params}
+
+    @app.get("/api/bench/candidates")
+    async def bench_candidates(model_path: str) -> dict[str, Any]:
+        return {"candidates": default_candidates(cfg.params_for(model_path))}
 
     # ------------------------------------------------------------- processes
 

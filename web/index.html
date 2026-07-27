@@ -187,14 +187,31 @@
         <button id="btn-manage-refresh" class="btn small ghost">Rescan</button>
       </div>
 
+      <div id="bench-panel" class="bench" hidden>
+        <div class="bench-head">
+          <strong id="bench-title">Benchmark</strong>
+          <span class="dim tiny" id="bench-note"></span>
+          <button id="bench-cancel" class="btn small danger" hidden>Stop</button>
+          <button id="bench-close" class="btn small ghost">Close</button>
+        </div>
+        <table class="mtable bench-table">
+          <thead><tr>
+            <th>Configuration</th><th class="num">Load</th><th class="num">Prompt</th>
+            <th class="num">Generate</th><th class="right">Use</th>
+          </tr></thead>
+          <tbody id="bench-rows"></tbody>
+        </table>
+      </div>
+
       <table class="mtable">
         <thead>
           <tr>
             <th>Model</th><th>Quant</th><th>Arch</th><th class="num">Size</th>
-            <th class="num">Ctx</th><th>Status</th><th class="right">Actions</th>
+            <th class="num">Ctx</th><th class="num">Best</th><th>Status</th>
+            <th class="right">Actions</th>
           </tr>
         </thead>
-        <tbody id="manage-rows"><tr><td colspan="7" class="empty">loading…</td></tr></tbody>
+        <tbody id="manage-rows"><tr><td colspan="8" class="empty">loading…</td></tr></tbody>
       </table>
 
       <div class="panel-head" style="margin-top:16px">

@@ -335,3 +335,14 @@ select.input { cursor: pointer; }
   .sidebar { position: static; }
   .topbar { flex-wrap: wrap; gap: 10px; }
 }
+
+/* ------------------------------------------------------------- benchmark */
+.bench {
+  background: var(--bg-elev); border: 1px solid var(--accent);
+  border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px;
+}
+.bench-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.bench-head .btn { margin-left: 4px; }
+.bench-head #bench-close { margin-left: auto; }
+.bench-table tr.winner td { background: #2ea04322; }
+.bench-table tr.winner strong { color: var(--accent-2); }

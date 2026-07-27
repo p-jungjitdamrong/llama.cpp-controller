@@ -68,6 +68,8 @@ class Config:
     # servers to bring up when the controller starts, in order:
     # [{"model_path": "...", "params": {...}}, …]
     autostart: list[dict] = field(default_factory=list)
+    # model path -> {ran_at, ctx_size, results, best} from the tuner
+    benchmarks: dict[str, dict] = field(default_factory=dict)
     # last model started, restored into the UI on reload
     last_model: str = ""
     # access control. The token is kept here in plain text on purpose: anyone who

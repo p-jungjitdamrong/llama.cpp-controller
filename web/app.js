@@ -11,6 +11,7 @@ const state = {
   logs: [],
   mode: "single",       // single | router
   settings: { config: {}, auth: {} },
+  bench: { path: null, results: [], running: false },
   expandedRouters: new Set(),
   serverSignature: null,
   series: { cpu: [], mem: [], proc: [] },
@@ -503,6 +504,111 @@ function renderScanDetails(data) {
     .map((s) => `${s.name} — ${s.reason}`).join("\n");
 }
 
+/* -------------------------------------------------------------- benchmark */
+
+function benchCell(model) {
+  const best = model.benchmark && model.benchmark.best;
+  if (!best) return '<span class="dim">—</span>';
+  return `<span title="${escapeHtml(best.label || "")}">${best.generate_tps} t/s</span>`;
+}
+
+function benchRow(result, index) {
+  const failed = Boolean(result.error);
+  const detail = failed
+    ? `<td colspan="3" class="dim">${escapeHtml(result.error)}</td>`
+    : `<td class="num">${result.load_seconds ?? "—"}s</td>
+       <td class="num">${result.prompt_tps ?? "—"}</td>
+       <td class="num"><strong>${result.generate_tps ?? "—"}</strong></td>`;
+  return `<tr data-index="${index}">
+      <td>${escapeHtml(result.label || `config ${index + 1}`)}</td>
+      ${detail}
+      <td class="right">${failed ? "" :
+        `<button class="btn small" data-bench-apply="${index}">Use</button>`}</td>
+    </tr>`;
+}
+
+function renderBenchRows() {
+  const rows = $("#bench-rows");
+  const results = state.bench.results;
+  rows.innerHTML = results.map(benchRow).join("") ||
+    '<tr><td colspan="5" class="dim">waiting for the first result…</td></tr>';
+  if (state.bench.pending) {
+    rows.insertAdjacentHTML("beforeend",
+      `<tr><td colspan="5" class="dim">${escapeHtml(state.bench.pending)}</td></tr>`);
+  }
+  const best = results.filter((r) => r.generate_tps)
+    .sort((a, b) => b.generate_tps - a.generate_tps)[0];
+  rows.querySelectorAll("tr").forEach((tr) => {
+    const index = +tr.dataset.index;
+    tr.classList.toggle("winner", Boolean(best) && results[index] === best);
+  });
+  rows.querySelectorAll("button[data-bench-apply]").forEach((button) => {
+    button.onclick = () => applyBenchmark(results[+button.dataset.benchApply]);
+  });
+}
+
+async function startBenchmark(path) {
+  state.bench = { path, results: [], pending: "starting…", running: true };
+  $("#bench-panel").hidden = false;
+  $("#bench-cancel").hidden = false;
+  $("#bench-title").textContent = `Tuning ${path.split("/").pop()}`;
+  $("#bench-note").textContent = "each configuration is started, asked one question, then stopped";
+  renderBenchRows();
+  $("#bench-panel").scrollIntoView({ block: "start" });
+  try {
+    const data = await api("/api/bench/run", {
+      method: "POST", body: JSON.stringify({ model_path: path }),
+    });
+    state.bench.runId = data.run_id;
+  } catch (err) {
+    state.bench.pending = err.message;
+    state.bench.running = false;
+    $("#bench-cancel").hidden = true;
+    renderBenchRows();
+  }
+}
+
+async function applyBenchmark(result) {
+  if (!result) return;
+  try {
+    const data = await api("/api/bench/apply", {
+      method: "POST",
+      body: JSON.stringify({ model_path: state.bench.path, result }),
+    });
+    $("#bench-note").textContent =
+      `saved: ${data.params.n_gpu_layers} GPU layers, ${data.params.threads || "auto"} threads, ctx ${data.params.ctx_size}`;
+    loadModels();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function benchEvent(e) {
+  if (e.event === "candidate") {
+    state.bench.pending = `running ${e.index}/${state.bench.total || "?"}: ${e.label}`;
+  } else if (e.event === "start") {
+    state.bench.total = e.total;
+    state.bench.pending = `0 of ${e.total} done`;
+  } else if (e.event === "result") {
+    state.bench.results.push(e);
+    state.bench.pending = state.bench.results.length < (state.bench.total || 0)
+      ? `${state.bench.results.length} of ${state.bench.total} done` : "";
+  } else if (e.event === "done") {
+    state.bench.pending = "";
+    state.bench.running = false;
+    $("#bench-cancel").hidden = true;
+    $("#bench-note").textContent = e.best
+      ? `best: ${e.best.label} at ${e.best.generate_tps} tok/s — press Use to save it`
+      : "no configuration completed";
+    loadModels();
+  } else if (e.event === "cancelled" || e.event === "error") {
+    state.bench.pending = e.message || "cancelled";
+    state.bench.running = false;
+    $("#bench-cancel").hidden = true;
+  }
+  renderBenchRows();
+}
+
 /* ------------------------------------------------------------- management */
 
 function manageRow(model) {
@@ -520,8 +626,10 @@ function manageRow(model) {
       <td>${escapeHtml(model.architecture || "—")}</td>
       <td class="num">${bytes(model.size)}</td>
       <td class="num">${model.n_ctx_train ? model.n_ctx_train.toLocaleString() : "—"}</td>
+      <td class="num">${benchCell(model)}</td>
       <td>${badges.join(" ") || '<span class="dim tiny">idle</span>'}</td>
       <td class="right nowrap">
+        <button class="btn small ghost" data-mtune="${escapeHtml(model.path)}">Tune</button>
         <button class="btn small" data-mstart="${escapeHtml(model.path)}" ${running ? "disabled" : ""}>Start</button>
         <button class="btn small danger" data-mdelete="${escapeHtml(model.path)}"
                 data-name="${escapeHtml(model.name)}" data-size="${model.size}">Delete</button>
@@ -534,7 +642,7 @@ function renderManage(data) {
   const rows = $("#manage-rows");
   rows.innerHTML = models.length
     ? models.map(manageRow).join("")
-    : '<tr><td colspan="7" class="empty">no models found</td></tr>';
+    : '<tr><td colspan="8" class="empty">no models found</td></tr>';
 
   const totalSize = models.reduce((sum, m) => sum + m.size, 0);
   const disks = (data.dir_info || []).filter((d) => d.exists && d.free);
@@ -546,6 +654,9 @@ function renderManage(data) {
     (diskText ? ` · ${diskText}` : "") +
     `<div class="dim tiny">downloads go to ${escapeHtml(data.download_dir || "")}</div>`;
 
+  rows.querySelectorAll("button[data-mtune]").forEach((button) => {
+    button.onclick = () => startBenchmark(button.dataset.mtune);
+  });
   rows.querySelectorAll("button[data-mstart]").forEach((button) => {
     button.onclick = () => { selectModel(button.dataset.mstart); $("#btn-start").click(); };
   });
@@ -882,6 +993,8 @@ function connect() {
       renderMetrics(data);
       renderServers(data.servers || []);
       renderDownloads(data.downloads || []);
+    } else if (type === "bench") {
+      benchEvent(data);
     } else if (type === "log") {
       appendLog(data);
     } else if (type === "hello") {
@@ -1224,6 +1337,13 @@ $$(".params input, .params select").forEach((el) => {
 });
 $("#btn-help").onclick = toggleFieldHelp;
 $("#s-save").onclick = saveSettings;
+$("#bench-close").onclick = () => { $("#bench-panel").hidden = true; };
+$("#bench-cancel").onclick = () => {
+  if (state.bench.runId) {
+    api("/api/bench/cancel", { method: "POST", body: JSON.stringify({ run_id: state.bench.runId }) })
+      .catch((err) => alert(err.message));
+  }
+};
 $("#s-auth").onchange = () => saveAuth();
 $("#s-auth-local").onchange = () => saveAuth();
 $("#s-token-rotate").onclick = () => saveAuth({ rotate: true });

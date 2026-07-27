@@ -10,6 +10,12 @@ an existing `config.json` is called out under **Changed**.
 ## [Unreleased]
 
 ### Added
+- **Tune** in the Manage tab: each candidate configuration is started for real,
+  asked the same question, and timed, with prompt processing and generation
+  reported separately. Any row can be saved as that model's settings, which then
+  apply when it is started on its own and when a router loads it. Sweeps GPU
+  offload and thread count by default, because those are the two that moved the
+  numbers on modest hardware.
 - Optional access control: a token checked on the API, the websocket and the
   proxy routes, usable as `Authorization: Bearer …` by any OpenAI-compatible
   client. Requests from the machine itself are exempt unless you say otherwise,
