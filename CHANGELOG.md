@@ -9,12 +9,13 @@ an existing `config.json` is called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-07-27
+
 ### Added
 - Every running server can show the exact command line it was started with, and
   each model a router holds shows the argv the router itself reports it will use,
   alongside the preset section behind it. That is the only real answer to whether
   a per-model preset reached the model — the router is asked rather than trusted.
-
 - Models in the Hugging Face cache get their own preset section too, keyed the
   way a router names them — `org/repo:QUANT` rather than a filename — so settings
   reach every model a router can see, not only the ones inside its directory.
@@ -151,7 +152,8 @@ an existing `config.json` is called out under **Changed**.
   and GPU metrics from `/proc` and `/sys`, streamed logs, GGUF discovery with
   header parsing, and a streaming test chat.
 
-[Unreleased]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/p-jungjitdamrong/llama.cpp-controller/compare/v0.1.0...v0.2.0
