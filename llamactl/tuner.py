@@ -97,9 +97,12 @@ def suggested_sweep(model_path: str, base: LaunchParams) -> dict[str, list[Any]]
             "threads": sorted({0, physical_cores()})}
 
 
-def _describe(key: str, value: Any) -> str:
+def _describe(key: str, value: Any, layers: int | None = None) -> str:
     if key == "n_gpu_layers":
-        return "CPU" if value == 0 else f"{value} GPU"
+        if value == 0:
+            return "CPU"
+        return "all on GPU" if layers and value >= layers else f"{value} of {layers} on GPU" \
+            if layers else f"{value} GPU"
     if key == "threads":
         return "auto threads" if value in (0, None) else f"{value}t"
     if key == "ctx_size":
@@ -113,17 +116,31 @@ def _describe(key: str, value: Any) -> str:
     return f"{key} {value}"
 
 
-def build_candidates(sweep: dict[str, list[Any]], base: LaunchParams) -> list[dict[str, Any]]:
+def build_candidates(sweep: dict[str, list[Any]], base: LaunchParams,
+                     model_path: str | None = None) -> list[dict[str, Any]]:
     """Cross product of the values chosen for each knob.
+
+    Offload values are clamped to the model's layer count first: -ngl 25, 50 and
+    99 all mean the same thing to a 24-layer model, and measuring that same
+    configuration four times only buys four samples of the same noise.
 
     Only knobs with more than one value appear in the label, so the table reads
     as the thing that varies rather than a wall of identical text.
     """
     import itertools
 
-    axes = {key: list(dict.fromkeys(values))          # de-duplicate, keep order
-            for key, values in sweep.items()
-            if key in SWEEPABLE and isinstance(values, list) and values}
+    layers = None
+    if model_path:
+        from .gguf import read_metadata
+        layers = read_metadata(Path(model_path)).get("n_layer")
+
+    axes = {}
+    for key, values in sweep.items():
+        if key not in SWEEPABLE or not isinstance(values, list) or not values:
+            continue
+        if key == "n_gpu_layers" and layers:
+            values = [min(int(v), layers) for v in values]
+        axes[key] = list(dict.fromkeys(values))       # de-duplicate, keep order
     if not axes:
         return default_candidates(base)
 
@@ -131,7 +148,9 @@ def build_candidates(sweep: dict[str, list[Any]], base: LaunchParams) -> list[di
     combos = []
     for values in itertools.product(*axes.values()):
         option = dict(zip(axes.keys(), values))
-        option["label"] = ", ".join(_describe(key, option[key]) for key in varying)
+        if layers and option.get("n_gpu_layers") == layers:
+            option["_all_layers"] = True
+        option["label"] = ", ".join(_describe(key, option[key], layers) for key in varying)
         combos.append(option)
         if len(combos) > MAX_CANDIDATES:
             raise ValueError(
@@ -257,11 +276,19 @@ class Tuner:
                 best = min(embed, key=lambda r: r["embed_ms"])   # latency: less is better
             else:
                 best = None
+            # a rival whose median falls inside the winner's own run-to-run range
+            # is not distinguishable from it, whatever the ordering says
+            tied = []
+            if best and best.get("spread"):
+                low, high = best["spread"]
+                key = "embed_ms" if best.get("embed_ms") else "generate_tps"
+                tied = [r["label"] for r in run.results
+                        if r is not best and r.get(key) and low <= r[key] <= high]
             record = {"ran_at": time.time(), "ctx_size": base.ctx_size,
-                      "results": run.results, "best": best}
+                      "results": run.results, "best": best, "tied_with": tied}
             self.cfg.benchmarks[run.model_path] = record
             self.cfg.save()
-            self._emit("done", best=best, results=run.results,
+            self._emit("done", best=best, results=run.results, tied_with=tied,
                        seconds=round(time.time() - run.started_at, 1))
         except Exception as exc:
             self._emit("error", message=f"{type(exc).__name__}: {exc}")
@@ -289,11 +316,13 @@ class Tuner:
         """Median latency over a few identical requests, plus tokens/s if reported."""
         timings = []
         tokens = None
-        for _ in range(max(3, repeats)):
+        wanted = max(3, repeats)
+        for attempt in range(wanted + 1):     # one warm-up, then the real runs
             started = time.monotonic()
             response = await client.post(f"{url}/v1/embeddings", json={"input": PROMPT})
             response.raise_for_status()
-            timings.append((time.monotonic() - started) * 1000)
+            if attempt:
+                timings.append((time.monotonic() - started) * 1000)
             usage = response.json().get("usage") or {}
             tokens = usage.get("prompt_tokens") or tokens
         middle = _median(timings)
@@ -329,7 +358,10 @@ class Tuner:
                     row.update(await self._probe_embedding(instance.base_url, client, repeats))
                 else:
                     prompts, generates = [], []
-                    for attempt in range(repeats):
+                    # the first call after a load pays for warm-up, so when there
+                    # is more than one run it is measured and thrown away
+                    warmup = 1 if repeats > 1 else 0
+                    for attempt in range(repeats + warmup):
                         if run.cancelled.is_set():
                             break
                         # a different opening each time, or llama.cpp would reuse
@@ -341,8 +373,9 @@ class Tuner:
                                   "max_tokens": MAX_TOKENS, "temperature": 0.0})
                         response.raise_for_status()
                         timings = response.json().get("timings") or {}
-                        prompts.append(timings.get("prompt_per_second") or 0)
-                        generates.append(timings.get("predicted_per_second") or 0)
+                        if attempt >= warmup:
+                            prompts.append(timings.get("prompt_per_second") or 0)
+                            generates.append(timings.get("predicted_per_second") or 0)
                         row["tokens"] = timings.get("predicted_n")
                     row["mode"] = "chat"
                     row["runs"] = len(generates)

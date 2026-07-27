@@ -274,7 +274,7 @@ def create_app(cfg: Config) -> FastAPI:
         if not candidates and payload.get("sweep"):
             try:
                 candidates = build_candidates(payload["sweep"],
-                                              cfg.params_for(model_path))
+                                              cfg.params_for(model_path), model_path)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
         try:
@@ -317,7 +317,9 @@ def create_app(cfg: Config) -> FastAPI:
     async def bench_candidates(model_path: str) -> dict[str, Any]:
         """What to offer in the sweep form, sized to this particular model."""
         base = cfg.params_for(model_path)
+        from .gguf import read_metadata
         return {"candidates": default_candidates(base),
+                "layers": read_metadata(Path(model_path)).get("n_layer"),
                 "suggested": suggested_sweep(model_path, base),
                 "current": {"n_gpu_layers": base.n_gpu_layers, "threads": base.threads,
                             "ctx_size": base.ctx_size, "batch_size": base.batch_size},
@@ -327,8 +329,9 @@ def create_app(cfg: Config) -> FastAPI:
     async def bench_preview(payload: dict = Body(...)) -> dict[str, Any]:
         """Expand a sweep without running it, so the UI can show the cost."""
         try:
+            model_path = payload.get("model_path", "")
             candidates = build_candidates(payload.get("sweep") or {},
-                                          cfg.params_for(payload.get("model_path", "")))
+                                          cfg.params_for(model_path), model_path)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"candidates": candidates, "count": len(candidates)}

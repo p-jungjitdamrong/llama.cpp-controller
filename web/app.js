@@ -601,9 +601,14 @@ async function previewSweep() {
       body: JSON.stringify({ model_path: state.bench.path, sweep: currentSweep() }),
     });
     // roughly a load plus a probe per run; enough to warn before a long sweep
-    const seconds = data.count * (8 + repeats * 12);
+    // one extra run per configuration is measured and discarded as warm-up
+    const seconds = data.count * (8 + (repeats + (repeats > 1 ? 1 : 0)) * 12);
+    const asked = parseList($("#b-ngl").value).length;
+    const kept = new Set(data.candidates.map((c) => c.n_gpu_layers)).size;
+    const clamped = state.bench.layers && asked > kept
+      ? ` · offload values above ${state.bench.layers} layers mean the same thing and were merged` : "";
     $("#bench-estimate").textContent =
-      `${data.count} configuration${data.count === 1 ? "" : "s"} × ${repeats} run${repeats === 1 ? "" : "s"} — roughly ${duration(seconds) || "a moment"}`;
+      `${data.count} configuration${data.count === 1 ? "" : "s"} × ${repeats} run${repeats === 1 ? "" : "s"} — roughly ${duration(seconds) || "a moment"}${clamped}`;
   } catch (err) {
     $("#bench-estimate").textContent = err.message;
   }
@@ -620,6 +625,9 @@ async function openBenchmark(path) {
   $("#bench-panel").scrollIntoView({ block: "start" });
 
   const info = await api(`/api/bench/candidates?model_path=${encodeURIComponent(path)}`);
+  state.bench.layers = info.layers;
+  $("#b-ngl-hint").textContent = info.layers
+    ? `-ngl, this model has ${info.layers} layers` : "-ngl";
   $("#b-ngl").value = (info.suggested.n_gpu_layers || []).join(", ");
   $("#b-threads").value = (info.suggested.threads || []).join(", ");
   $("#b-ctx").value = info.current.ctx_size;
@@ -686,9 +694,15 @@ function benchEvent(e) {
     state.bench.pending = "";
     state.bench.running = false;
     $("#bench-cancel").hidden = true;
-    $("#bench-note").textContent = e.best
-      ? `best: ${e.best.label} at ${e.best.generate_tps ? `${e.best.generate_tps} tok/s` : `${e.best.embed_ms} ms`} — press Use to save it`
-      : "no configuration completed";
+    if (!e.best) {
+      $("#bench-note").textContent = "no configuration completed";
+    } else {
+      const score = e.best.generate_tps ? `${e.best.generate_tps} tok/s` : `${e.best.embed_ms} ms`;
+      const tied = (e.tied_with || []).length;
+      $("#bench-note").textContent = tied
+        ? `best: ${e.best.label} at ${score}, but ${tied} other${tied === 1 ? "" : "s"} landed inside its own run-to-run range — treat them as equal`
+        : `best: ${e.best.label} at ${score} — press Use to save it`;
+    }
     loadModels();
   } else if (e.event === "note") {
     $("#bench-note").textContent = e.message;

@@ -10,6 +10,15 @@ an existing `config.json` is called out under **Changed**.
 ## [Unreleased]
 
 ### Added
+- Sweeps no longer measure the same configuration several times over: offload
+  values are clamped to the model's layer count first, so 25, 50, 75 and 99 all
+  collapse to "all on GPU" for a 24-layer model — ten runs became four. The form
+  shows the layer count, since the field takes a count and not a percentage.
+- With more than one run per configuration, the first is measured and discarded.
+  It pays for warm-up: an embedding call costs 266 ms cold and settles at about
+  190 ms, and letting that into the median made rankings meaningless.
+- A winner whose rivals fall inside its own run-to-run range is reported as tied
+  rather than crowned.
 - The tuning sweep is now yours to define: comma-separated values for GPU layers,
   threads, context, batch and flash attention, expanded into every combination,
   with a preview of how many runs that is and roughly how long. GPU layers is a
