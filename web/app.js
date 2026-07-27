@@ -1042,8 +1042,13 @@ function renderSharedNote() {
 
   let detail;
   if (running) {
-    const own = new Set(state.models.filter((m) => m.has_preset)
-      .map((m) => m.name.replace(/\.gguf$/i, "")));
+    // a router names a local file by its stem and a cached one by repo:quant
+    const own = new Set();
+    for (const m of state.models.filter((x) => x.has_preset)) {
+      own.add(m.name.replace(/\.gguf$/i, ""));
+      const quant = m.quant || m.quant_guess;
+      if (m.repo && quant) own.add(`${m.repo}:${quant}`);
+    }
     const inherit = running.router_models.filter((m) => !own.has(m.id));
     detail = inherit.length
       ? `${inherit.length} of ${running.router_models.length} models use them right now: ${inherit.map((m) => m.id.split("/").pop()).join(", ")}`

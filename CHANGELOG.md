@@ -15,6 +15,11 @@ an existing `config.json` is called out under **Changed**.
   alongside the preset section behind it. That is the only real answer to whether
   a per-model preset reached the model — the router is asked rather than trusted.
 
+- Models in the Hugging Face cache get their own preset section too, keyed the
+  way a router names them — `org/repo:QUANT` rather than a filename — so settings
+  reach every model a router can see, not only the ones inside its directory.
+  Where two files share one router name, the sections collapse to one and the
+  file that was shadowed is written into the preset as a comment.
 - Router mode says what the launch fields actually are now that presets are
   written per model: the `[*]` section, reaching only models that have none of
   their own, named and counted from the running router.
